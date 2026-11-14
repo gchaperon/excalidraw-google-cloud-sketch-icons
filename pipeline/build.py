@@ -134,10 +134,9 @@ def fetch_icons(lib, tmp):
 def fallback_item(name, b_elements):
     """Make a library item from the approach B result, with the standard label.
 
-    Used when the model step fails for an icon. The approach B label is replaced with the
-    label from ``compact.label``, so that all items in a library look the same.
+    Used when the model step fails for an icon.
     """
-    els = [e for e in b_elements if e["type"] != "text"]
+    els = list(b_elements)
     group = els[0]["groupIds"][0] if els else "g-fallback"
     return {
         "id": f"b-{name}",
@@ -162,10 +161,10 @@ def process_icon(cfg, key, workdir, log, name, svg):
     Returns:
         A tuple (item, cost in USD, True if the model failed and the item is the fallback).
     """
-    b_elements = convert.convert(Path(svg).read_text(), name)
+    b_elements = convert.convert(Path(svg).read_text())
     args = types.SimpleNamespace(model=cfg["model"], rounds=cfg["rounds"])
     try:
-        item, cost, _, _ = redraw.process(args, key, workdir, name, svg, b_elements, log)
+        item, cost = redraw.process(args, key, workdir, name, svg, b_elements, log)
     except Exception as e:  # network or render failure: keep going with approach B
         log.write(f"{name}: model step failed: {e!r}\n")
         item, cost = None, 0.0

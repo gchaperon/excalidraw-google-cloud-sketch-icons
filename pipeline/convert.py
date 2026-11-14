@@ -1,4 +1,4 @@
-"""Approach B: deterministic SVG -> sketch-style Excalidraw library item.
+"""Approach B: deterministic SVG -> sketch-style Excalidraw elements.
 
 For every <path>/<circle>/<rect>/... in the icon's art:
   1. rasterize that shape alone (rsvg-convert) at RES x RES
@@ -7,7 +7,7 @@ For every <path>/<circle>/<rect>/... in the icon's art:
      - solid blob (thick region): an ellipse if it is round, else a filled closed line
      - thin stroke (outlined stroke): skeletonize -> trace polylines -> prune spurs
        -> extend line ends -> fit circles -> simplify -> split at corners -> Excalidraw `line`s
-  3. group everything, add a Virgil label below.
+  3. put everything in one group.
 
 The result has the right proportions but often has small errors. Approach C (redraw.py)
 uses it as a geometric guide for the LLM.
@@ -15,17 +15,13 @@ uses it as a geometric guide for the LLM.
 Coordinates: the rasters and polylines use (row, column) = (y, x) at RES px; the output
 elements use (x, y) in an ICON x ICON box.
 
-Usage: python -m pipeline.convert OUT.excalidrawlib NAME=path.svg [NAME=path.svg ...]
-
 Needs `rsvg-convert` (librsvg) on PATH.
 """
 
-import json
 import math
 import random
 import re
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -44,7 +40,6 @@ ROUGH = 1  # Excalidraw roughness (0 architect, 1 artist, 2 cartoonist)
 SPUR = 34  # px at RES: drop skeleton branches shorter than this
 TOL = 4.0  # px at RES: RDP tolerance
 CORNER = 50  # degrees: split polylines at turns sharper than this
-FONT_VIRGIL = 1  # Excalidraw fontFamily id
 
 SHAPE_RE = re.compile(r"<(path|circle|rect|ellipse|polygon|polyline|line)\b[^>]*?/?>", re.S)
 
@@ -336,15 +331,14 @@ def extend_ends(line, deg, half):
     return line
 
 
-def convert(svg_text, name):
+def convert(svg_text):
     """Convert one icon SVG to Excalidraw elements (approach B).
 
     Args:
         svg_text: The SVG document.
-        name: Text of the label.
 
     Returns:
-        The elements, all in one group. The last element is a Virgil text label.
+        The elements, all in one group, without a label.
     """
     group = f"g-{random.randrange(1 << 30):x}"
     els = []
@@ -413,56 +407,4 @@ def convert(svg_text, name):
                     if curved:  # resample curved part more finely for smooth roundness
                         part = [tuple(p) for p in approximate_polygon(np.array(part), TOL / 2)]
                     els.append(line_el(part, color, group, curved))
-    els.append(
-        base(
-            "text",
-            0,
-            ICON + 8,
-            ICON,
-            25,
-            "#1e1e1e",
-            group,
-            text=name,
-            originalText=name,
-            fontSize=20,
-            fontFamily=FONT_VIRGIL,
-            textAlign="center",
-            verticalAlign="top",
-            containerId=None,
-            lineHeight=1.25,
-            baseline=18,
-            roughness=1,
-            strokeWidth=1,
-        )
-    )
     return els
-
-
-def main():
-    """Convert the icons on the command line and write them as one library."""
-    out, pairs = sys.argv[1], sys.argv[2:]
-    items = []
-    for pair in pairs:
-        name, path = pair.split("=", 1)
-        els = convert(Path(path).read_text(), name)
-        print(f"{name}: {len(els)} elements", file=sys.stderr)
-        items.append(
-            {
-                "id": f"item-{len(items)}",
-                "status": "unpublished",
-                "created": int(time.time() * 1000),
-                "name": name,
-                "elements": els,
-            }
-        )
-    library = {
-        "type": "excalidrawlib",
-        "version": 2,
-        "source": "gcp-sketch-b",
-        "libraryItems": items,
-    }
-    Path(out).write_text(json.dumps(library))
-
-
-if __name__ == "__main__":
-    main()
