@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <g id="bounding_box"><rect width="512" height="512" fill="none"/></g>
+  <mask id="m"><rect width="512" height="512" fill="#fff"/></mask>
+  <g id="art">
+    <circle fill="#fbbc04" cx="150" cy="150" r="100"/>
+    <rect fill="#9aa0a6" x="230" y="320" width="240" height="120"/>
+  </g>
+</svg>
