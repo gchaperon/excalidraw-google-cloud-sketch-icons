@@ -4,7 +4,8 @@ name: Update libraries
 # - Only `schedule` and `workflow_dispatch` triggers. Never add `pull_request_target` or
 #   `workflow_run`: they run with this repository's secrets on code from forks.
 # - The OpenRouter key is an *environment* secret (environment `openrouter`, deployments
-#   restricted to `main`), and only the `build` job uses that environment.
+#   restricted to `main`), and only the `build` job uses that environment. The job sets
+#   `deployment: false`: the branch policy still applies, but no deployment record is created.
 # - The `build` job has read-only access to the repository. The `release` job, which can
 #   publish releases, has no access to the API key.
 # - Generated files are never committed. The libraries and sources.lock.json (the state for
@@ -31,7 +32,11 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    environment: openrouter
+    environment:
+      name: openrouter
+      # Used only to scope the secret (branch policy: main). Nothing is deployed, so do not
+      # create deployment records.
+      deployment: false
     permissions:
       contents: read
     outputs:
