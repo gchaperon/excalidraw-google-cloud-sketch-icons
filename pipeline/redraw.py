@@ -4,18 +4,12 @@ Each icon goes through ``rounds`` model calls:
   round 1: the official icon (PNG), the approach B rendering (PNG) and its compact shapes
   round 2+: the official icon, the rendering of the previous answer and its shapes
 The model answers with compact shapes (see compact.py). The last answer that parses is
-kept. The model is called through OpenRouter.
-
-Usage: python -m pipeline.redraw MODEL OUTDIR [--icons out/icons.json]
-       [--blib out/b.excalidrawlib] [--rounds 3] [--workers 4]
-
-Writes OUTDIR/<model>/lib.excalidrawlib, summary.json, per-round PNGs and a log with tokens
-and cost (from OpenRouter usage accounting). build.py uses ``key`` and ``process`` directly.
+kept. The model is called through OpenRouter. The per-round PNGs and a log with tokens and
+cost (from OpenRouter usage accounting) are written to the build directory.
 
 Needs `rsvg-convert` (librsvg) and Chrome or Chromium (see render.py).
 """
 
-import argparse
 import base64
 import io
 import json
@@ -23,7 +17,6 @@ import os
 import re
 import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
@@ -119,8 +112,8 @@ def ask(model, k, text, images, log):
         log: Writable text file for HTTP errors, timing, tokens and cost.
 
     Returns:
-        A tuple (answer text, cost in USD, seconds). If all attempts fail, or the answer
-        has no choices, (None, 0.0, 0).
+        A tuple (answer text, cost in USD). If all attempts fail, or the answer has no
+        choices, (None, 0.0).
     """
     content = [
         {"type": "text", "text": text},
@@ -146,11 +139,11 @@ def ask(model, k, text, images, log):
         log.flush()
         time.sleep(5 * (attempt + 1))
     else:
-        return None, 0.0, 0
+        return None, 0.0
     d = r.json()
     if "choices" not in d:
         log.write(f"  no choices: {json.dumps(d)[:300]}\n")
-        return None, 0.0, 0
+        return None, 0.0
     msg = d["choices"][0]["message"].get("content") or ""
     u = d.get("usage", {})
     cost = float(u.get("cost") or 0)
@@ -158,7 +151,7 @@ def ask(model, k, text, images, log):
         f"  {time.time() - t0:.0f}s in={u.get('prompt_tokens')} "
         f"out={u.get('completion_tokens')} cost=${cost:.4f}\n"
     )
-    return msg, cost, time.time() - t0
+    return msg, cost
 
 
 def parse(msg):
@@ -194,34 +187,32 @@ def process(a, k, od, name, svg, b_els, log):
         k: OpenRouter API key.
         od: Output directory for the PNGs and the final shapes JSON.
         name: Display name of the icon.
-        svg: Path of the official SVG, absolute or relative to the repository root.
+        svg: Path of the official SVG.
         b_els: Approach B elements of the icon.
         log: Writable text file, shared between threads.
 
     Returns:
-        A tuple (library item or None if no round gave valid shapes, cost in USD,
-        model seconds, list of the model notes).
+        A tuple (library item or None if no round gave valid shapes, cost in USD).
     """
     od = Path(od)
     fn = re.sub(r"\W+", "_", name)  # file name stem
     orig = od / f"{fn}_orig.png"
     subprocess.run(
-        ["rsvg-convert", "-w", "320", "-h", "320", "-b", "white", "-o", orig, ROOT / svg],
+        ["rsvg-convert", "-w", "320", "-h", "320", "-b", "white", "-o", orig, svg],
         check=True,
     )
     b_png = od / f"{fn}_b.png"
     render(b_els, b_png)
     shapes = from_excalidraw(b_els)
-    best, cur_png, cost_sum, secs, notes = None, None, 0.0, 0.0, []
+    best, cur_png, cost_sum = None, None, 0.0
     for rnd in range(1, a.rounds + 1):
         if rnd == 1:
             text, imgs = ROUND1.format(name=name, shapes=json.dumps(shapes)), [orig, b_png]
         else:
             text, imgs = ROUND2.format(shapes=json.dumps(best)), [orig, cur_png]
         buf = io.StringIO()  # per-icon buffered log
-        msg, cost, dt = ask(a.model, k, text, imgs, buf)
+        msg, cost = ask(a.model, k, text, imgs, buf)
         cost_sum += cost
-        secs += dt
         new, note = parse(msg)
         log.write(f"{name} round {rnd}\n" + buf.getvalue())
         if not new:
@@ -229,7 +220,6 @@ def process(a, k, od, name, svg, b_els, log):
             log.flush()
             continue
         best = new
-        notes.append(note)
         cur_png = od / f"{fn}_r{rnd}.png"
         render(to_excalidraw(best, name), cur_png)
         log.write(f"  {len(best)} shapes. note: {note[:300]}\n")
@@ -244,57 +234,4 @@ def process(a, k, od, name, svg, b_els, log):
             "elements": to_excalidraw(best, name),
         }
         (od / f"{fn}_shapes.json").write_text(json.dumps(best))
-    return item, cost_sum, secs, notes
-
-
-def main():
-    """Redraw the icons of an icons file with one model, and write a library and a summary."""
-    ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    ap.add_argument("model", help="OpenRouter model id")
-    ap.add_argument("outdir")
-    ap.add_argument(
-        "--icons",
-        default="out/icons.json",
-        help="JSON list of {name, svg}, relative to the repository root",
-    )
-    ap.add_argument(
-        "--blib",
-        default="out/b.excalidrawlib",
-        help="approach B library, relative to the repository root",
-    )
-    ap.add_argument("--rounds", type=int, default=3)
-    ap.add_argument("--workers", type=int, default=4)
-    a = ap.parse_args()
-    k = key()
-    od = Path(a.outdir) / a.model.replace("/", "_")
-    od.mkdir(parents=True, exist_ok=True)
-    icons = json.loads((ROOT / a.icons).read_text())
-    blib_json = json.loads((ROOT / a.blib).read_text())
-    blib = {i["name"]: i["elements"] for i in blib_json["libraryItems"]}
-    with (od / "log.txt").open("w") as log:
-
-        def run(icon):
-            return process(a, k, od, icon["name"], icon["svg"], blib[icon["name"]], log)
-
-        with ThreadPoolExecutor(a.workers) as ex:
-            results = list(ex.map(run, icons))
-        items = [r[0] for r in results if r[0]]  # keeps the order of the icons file
-        total, secs = sum(r[1] for r in results), sum(r[2] for r in results)
-        notes = {icon["name"]: r[3] for icon, r in zip(icons, results, strict=True)}
-        library = {
-            "type": "excalidrawlib",
-            "version": 2,
-            "source": f"gcp-sketch-c:{a.model}",
-            "libraryItems": items,
-        }
-        (od / "lib.excalidrawlib").write_text(json.dumps(library))
-        summary = {"model": a.model, "cost": total, "seconds": secs, "icons": len(items)}
-        (od / "summary.json").write_text(json.dumps(summary | {"notes": notes}, indent=1))
-        log.write(
-            f"TOTAL cost ${total:.4f}, model time {secs:.0f}s, {len(items)}/{len(icons)} icons\n"
-        )
-    print(f"{a.model}: ${total:.4f}, {secs:.0f}s, {len(items)}/{len(icons)} icons")
-
-
-if __name__ == "__main__":
-    main()
+    return item, cost_sum
