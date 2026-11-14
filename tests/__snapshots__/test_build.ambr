@@ -1,0 +1,17 @@
+# serializer version: 1
+# name: test_incremental_build
+  '''
+  Rebuilt from the current [Google Cloud icons](https://cloud.google.com/icons).
+  
+  ### Test library
+  - Added: Nice Name
+  - Changed: B
+  - Removed: Gone
+  - Fallback to deterministic conversion (model failed): B
+  
+  Model: `some/model`, cost $0.50.
+  
+  `sources.lock.json` lists the SHA-256 of every source icon. The pipeline uses it to detect changes.
+  
+  '''
+# ---

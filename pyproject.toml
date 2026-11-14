@@ -14,7 +14,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pytest>=9.2.0",
     "ruff>=0.17.5",
+    "syrupy>=7.0.1",
 ]
 
 [tool.ruff]
@@ -38,3 +40,11 @@ select = [
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]  # test names describe the tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]  # pipeline/ is not an installed package
+addopts = ["--strict-markers"]

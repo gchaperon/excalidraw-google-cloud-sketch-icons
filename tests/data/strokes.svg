@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <g id="bounding_box"><rect width="512" height="512" fill="none"/></g>
+  <defs><circle id="unused" cx="10" cy="10" r="5"/></defs>
+  <g id="art">
+    <path fill="#4285f4" fill-rule="evenodd" d="M256,106a150,150 0 1,0 0.1,0Z M256,122a134,134 0 1,0 0.1,0Z"/>
+    <polygon fill="#ea4335" points="60,60 80,60 80,430 450,430 450,450 60,450"/>
+    <circle fill="#34a853" cx="440" cy="70" r="18"/>
+  </g>
+</svg>
