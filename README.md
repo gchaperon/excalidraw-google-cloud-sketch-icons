@@ -5,6 +5,10 @@ Hand-drawn style [Excalidraw](https://excalidraw.com) icon libraries (`.excalidr
 > [!IMPORTANT]
 > **This is an unofficial, community project.** It is not affiliated with, sponsored by, or endorsed by Google LLC. The icons in these libraries are hand-drawn style reinterpretations of Google's official icons, made for use in architecture diagrams.
 
+## Why this project
+
+I really liked the hand-drawn style of the [AWS Architecture Icons](https://github.com/excalidraw/excalidraw-libraries/tree/main/libraries/childishgirl) library by ChildishGirl in the [Excalidraw libraries catalog](https://libraries.excalidraw.com), and I could not find anything similar for Google Cloud. So this project makes one, and keeps it up to date automatically.
+
 ## Libraries
 
 | Library | Contents |

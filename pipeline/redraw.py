@@ -15,7 +15,8 @@ ENV = os.path.join(ROOT, '.env')
 
 STYLE = """You convert Google Cloud product icons into hand-drawn Excalidraw sketch icons.
 
-Target style (like the popular hand-drawn AWS Excalidraw libraries):
+Target style: Excalidraw's native hand-drawn look - simple shapes with loose, slightly uneven strokes,
+as if sketched quickly on a whiteboard:
 - Simple and recognizable: keep the characteristic silhouette and the main parts, drop tiny details.
 - Few shapes: usually 4-15 shapes. Each Excalidraw shape is drawn with a rough hand-drawn stroke.
 - Keep the original colors per part. Google palette: blue #4285f4, red #ea4335, yellow #fbbc04,
