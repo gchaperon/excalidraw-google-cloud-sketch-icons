@@ -4,14 +4,16 @@ Usage:
   python -m pipeline.build              # incremental: process new/changed icons only
   python -m pipeline.build --check      # only report changes, do not call the model
   python -m pipeline.build --force      # reprocess every icon
-  python -m pipeline.build --adopt      # record current source hashes as already built (no processing)
 
-State is kept in sources.lock.json (sha256 of every source SVG). The original Google files are
-downloaded to a temporary directory and are never written to the repository.
+The previous state (the libraries and sources.lock.json, which holds the sha256 of every
+source SVG) is downloaded from the latest GitHub release of the repository in config.json.
+Nothing is written to the source tree: all outputs go to dist/ (release files and notes.md)
+and build/ (intermediate images and logs). The original Google files are downloaded to a
+temporary directory and are never stored.
 
-In GitHub Actions, writes `changed=true|false` to $GITHUB_OUTPUT and release notes to build/notes.md.
+In GitHub Actions, writes `changed=true|false` to $GITHUB_OUTPUT.
 """
-import argparse, hashlib, json, os, sys, tempfile, time, types, urllib.request, zipfile
+import argparse, hashlib, json, os, sys, tempfile, time, types, urllib.error, urllib.request, zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 from . import convert, redraw
@@ -19,20 +21,41 @@ from .compact import label
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 CONFIG = os.path.join(os.path.dirname(__file__), 'config.json')
-LOCK = os.path.join(REPO, 'sources.lock.json')
+DIST = os.path.join(REPO, 'dist')
 WORK = os.path.join(REPO, 'build')
+LOCK_FILE = 'sources.lock.json'
+UA = {'User-Agent': 'excalidraw-google-cloud-sketch-icons'}
 
 
 def sha256(path):
     return hashlib.sha256(open(path, 'rb').read()).hexdigest()
 
 
+def download(url, timeout=120):
+    """Return the body, or None if the URL does not exist (404)."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+
+
+def previous_release(cfg):
+    """Files of the latest release: {file name: bytes or None}."""
+    base = f'https://github.com/{cfg["repo"]}/releases/latest/download/'
+    names = [LOCK_FILE] + [lib['file'] for lib in cfg['libraries']]
+    return {n: download(base + n) for n in names}
+
+
 def fetch_icons(lib, tmp):
     """Download and extract one zip. Returns {display name: {folder, svg path, sha256}}."""
+    data = download(lib['zip'])
+    if data is None:
+        raise SystemExit(f'not found: {lib["zip"]}')
     zpath = os.path.join(tmp, lib['id'] + '.zip')
-    req = urllib.request.Request(lib['zip'], headers={'User-Agent': 'excalidraw-google-cloud-sketch-icons'})
-    with urllib.request.urlopen(req, timeout=120) as r, open(zpath, 'wb') as f:
-        f.write(r.read())
+    open(zpath, 'wb').write(data)
     xdir = os.path.join(tmp, lib['id'])
     with zipfile.ZipFile(zpath) as z:
         for m in z.namelist():  # refuse path traversal
@@ -57,12 +80,6 @@ def fetch_icons(lib, tmp):
     return icons
 
 
-def load_items(path):
-    if not os.path.exists(path):
-        return {}
-    return {i['name']: i for i in json.load(open(path))['libraryItems']}
-
-
 def fallback_item(name, b_elements):
     """Approach B result with the standard label, used when the model fails for an icon."""
     els = [e for e in b_elements if e['type'] != 'text']
@@ -85,54 +102,56 @@ def main():
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group()
     g.add_argument('--check', action='store_true'); g.add_argument('--force', action='store_true')
-    g.add_argument('--adopt', action='store_true')
     a = ap.parse_args()
     cfg = json.load(open(CONFIG))
-    lock = json.load(open(LOCK)) if os.path.exists(LOCK) else {}
-    notes, any_change, total_cost = [], False, 0.0
+    prev = previous_release(cfg)
+    lock = json.loads(prev[LOCK_FILE]) if prev[LOCK_FILE] else {}
+    if not lock:
+        print('no previous release state found: every icon counts as new')
+    notes, outputs, any_change, total_cost = [], {}, False, 0.0
 
     with tempfile.TemporaryDirectory() as tmp:
         for lib in cfg['libraries']:
             icons = fetch_icons(lib, tmp)
             old = lock.get(lib['id'], {})
-            added = sorted(n for n in icons if n not in old)
-            changed = sorted(n for n in icons if n in old and old[n]['sha256'] != icons[n]['sha256'])
+            items = {i['name']: i for i in json.loads(prev[lib['file']])['libraryItems']} if prev[lib['file']] else {}
+            added = sorted(n for n in icons if n not in old or n not in items)
+            changed = sorted(n for n in icons if n in old and n in items and old[n]['sha256'] != icons[n]['sha256'])
             removed = sorted(n for n in old if n not in icons)
             todo = sorted(icons) if a.force else added + changed
             print(f'{lib["id"]}: {len(icons)} icons, added {added}, changed {changed}, removed {removed}')
+            any_change |= bool(todo or removed)
             if a.check:
-                any_change |= bool(added or changed or removed); continue
-            lock[lib['id']] = {n: {'folder': i['folder'], 'sha256': i['sha256']} for n, i in sorted(icons.items())}
-            if a.adopt or not (todo or removed):
                 continue
-            any_change = True
-            out = os.path.join(REPO, lib['out'])
-            items = load_items(out)
-            workdir = os.path.join(WORK, lib['id']); os.makedirs(workdir, exist_ok=True)
-            key = redraw.key()
-            with open(os.path.join(workdir, 'log.txt'), 'a') as log, ThreadPoolExecutor(cfg['workers']) as ex:
-                results = dict(zip(todo, ex.map(lambda n: process_icon(cfg, key, workdir, n, icons[n]['svg'], log), todo)))
-            fallbacks = [n for n, r in results.items() if r[2]]
-            for n, (item, cost, _) in results.items():
-                items[n] = item; total_cost += cost
-            items = {n: items[n] for n in sorted(icons, key=str.lower) if n in items}
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            json.dump({'type': 'excalidrawlib', 'version': 2,
-                       'source': 'https://github.com/gchaperon/excalidraw-google-cloud-sketch-icons',
-                       'libraryItems': list(items.values())}, open(out, 'w'))
-            notes.append(f'### {lib["title"]}\n'
-                         + ''.join(f'- {label_}: {", ".join(ns)}\n' for label_, ns in
-                                   (('Added', added), ('Changed', changed), ('Removed', removed),
-                                    ('Rebuilt', sorted(set(todo) - set(added) - set(changed))),
-                                    ('Fallback to deterministic conversion (model failed)', fallbacks)) if ns))
+            lock[lib['id']] = {n: {'folder': i['folder'], 'sha256': i['sha256']} for n, i in sorted(icons.items())}
+            fallbacks = []
+            if todo:
+                workdir = os.path.join(WORK, lib['id']); os.makedirs(workdir, exist_ok=True)
+                key = redraw.key()
+                with open(os.path.join(workdir, 'log.txt'), 'a') as log, ThreadPoolExecutor(cfg['workers']) as ex:
+                    results = dict(zip(todo, ex.map(lambda n: process_icon(cfg, key, workdir, n, icons[n]['svg'], log), todo)))
+                for n, (item, cost, failed) in results.items():
+                    items[n] = item; total_cost += cost
+                    if failed:
+                        fallbacks.append(n)
+            outputs[lib['file']] = {
+                'type': 'excalidrawlib', 'version': 2, 'source': f'https://github.com/{cfg["repo"]}',
+                'libraryItems': [items[n] for n in sorted(icons, key=str.lower) if n in items]}
+            lines = [f'- {t}: {", ".join(ns)}\n' for t, ns in (
+                ('Added', added), ('Changed', changed), ('Removed', removed),
+                ('Rebuilt', sorted(set(todo) - set(added) - set(changed))),
+                ('Fallback to deterministic conversion (model failed)', fallbacks)) if ns]
+            notes.append(f'### {lib["title"]}\n' + (''.join(lines) or '- No changes\n'))
 
     if not a.check:
-        json.dump(lock, open(LOCK, 'w'), indent=1, ensure_ascii=False); open(LOCK, 'a').write('\n')
-    if notes:
-        os.makedirs(WORK, exist_ok=True)
-        open(os.path.join(WORK, 'notes.md'), 'w').write(
+        os.makedirs(DIST, exist_ok=True)
+        for f, lib_json in outputs.items():
+            json.dump(lib_json, open(os.path.join(DIST, f), 'w'))
+        json.dump(lock, open(os.path.join(DIST, LOCK_FILE), 'w'), indent=1, ensure_ascii=False)
+        open(os.path.join(DIST, 'notes.md'), 'w').write(
             'Rebuilt from the current [Google Cloud icons](https://cloud.google.com/icons).\n\n' + '\n'.join(notes)
-            + f'\nModel: `{cfg["model"]}`, cost ${total_cost:.2f}.\n')
+            + f'\nModel: `{cfg["model"]}`, cost ${total_cost:.2f}.\n\n'
+            + '`sources.lock.json` lists the SHA-256 of every source icon. The pipeline uses it to detect changes.\n')
     print(f'changed={str(any_change).lower()} cost=${total_cost:.2f}')
     if os.environ.get('GITHUB_OUTPUT'):
         open(os.environ['GITHUB_OUTPUT'], 'a').write(f'changed={str(any_change).lower()}\n')

@@ -18,10 +18,16 @@ The legacy two-tone blue console icons are not included.
 
 ## Installation
 
-1. Download `google-cloud-products.excalidrawlib` and/or `google-cloud-categories.excalidrawlib` from the [latest release](https://github.com/gchaperon/excalidraw-google-cloud-sketch-icons/releases/latest).
-2. In Excalidraw, open the library panel (press `9`), open its menu, and choose **Load**. Select the downloaded file.
+1. Download one or both libraries (these links always point to the latest release):
+   - [**google-cloud-products.excalidrawlib**](https://github.com/gchaperon/excalidraw-google-cloud-sketch-icons/releases/latest/download/google-cloud-products.excalidrawlib)
+   - [**google-cloud-categories.excalidrawlib**](https://github.com/gchaperon/excalidraw-google-cloud-sketch-icons/releases/latest/download/google-cloud-categories.excalidrawlib)
+2. Drag the downloaded file onto the [Excalidraw](https://excalidraw.com) canvas. The icons are added to your library panel.
 
-Each icon is one group with its name as a label. Ungroup it if you want to edit or delete the label.
+   Alternatively, open the library panel, open its `⋯` menu, choose **Open**, and select the file.
+
+Each icon is one group with its name as a label. Ungroup it (`Ctrl+Shift+G`) if you want to edit or delete the label.
+
+Release notes and older versions are on the [releases page](https://github.com/gchaperon/excalidraw-google-cloud-sketch-icons/releases).
 
 ## How the icons are made
 
@@ -34,7 +40,9 @@ The original Google icon files are **not** stored in or redistributed by this re
 
 ### Automatic updates
 
-The [Update libraries](.github/workflows/update-libraries.yml) workflow runs every day. It downloads Google's icon packs and compares the SHA-256 of every SVG with [`sources.lock.json`](sources.lock.json). If an icon was added, changed, or removed, only those icons are rebuilt, the libraries and the lock file are committed, and a new release (`vYYYY.MM.DD`) is published with the two library files.
+The [Update libraries](.github/workflows/update-libraries.yml) workflow runs every day. It downloads Google's icon packs and compares the SHA-256 of every SVG with `sources.lock.json` from the latest release. If an icon was added, changed, or removed, only those icons are rebuilt, and a new release (`vYYYY.MM.DD`) is published with the two libraries and the updated `sources.lock.json`.
+
+Generated files are never committed to this repository. Releases are the only place where the libraries are published.
 
 ### Running the pipeline locally
 
@@ -46,7 +54,9 @@ uv run python -m pipeline.build           # rebuild new/changed icons only
 uv run python -m pipeline.build --force   # rebuild every icon
 ```
 
-Settings (model, rounds, icon names) are in [`pipeline/config.json`](pipeline/config.json). Intermediate images and logs are written to `build/`.
+The previous state is downloaded from the latest release. Outputs are written to `dist/` (libraries, `sources.lock.json`, release notes) and intermediate images and logs to `build/`. Both folders are git-ignored.
+
+Settings (model, rounds, icon names) are in [`pipeline/config.json`](pipeline/config.json).
 
 ## Use of Google's icons and trademarks
 

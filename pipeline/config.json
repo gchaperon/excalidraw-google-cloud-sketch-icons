@@ -1,4 +1,5 @@
 {
+  "repo": "gchaperon/excalidraw-google-cloud-sketch-icons",
   "model": "google/gemini-4-argon",
   "rounds": 3,
   "workers": 6,
@@ -8,26 +9,26 @@
       "title": "Sketch icons for Google Cloud – Products",
       "zip": "https://services.google.com/fh/files/misc/core-products-icons.zip",
       "root": "Unique Icons",
-      "out": "libraries/google-cloud-products.excalidrawlib",
       "names": {
         "Cloud Spanner": "Spanner",
         "Distributed Cloud": "Google Distributed Cloud",
         "Security Operations": "Google Security Operations",
         "Threat Intelligence": "Google Threat Intelligence"
-      }
+      },
+      "file": "google-cloud-products.excalidrawlib"
     },
     {
       "id": "categories",
       "title": "Sketch icons for Google Cloud – Categories",
       "zip": "https://services.google.com/fh/files/misc/category-icons.zip",
       "root": "Category Icons",
-      "out": "libraries/google-cloud-categories.excalidrawlib",
       "names": {
         "Agents": "AI Applications & Agents",
         "AI _ Machine Learning": "AI / Machine Learning",
         "Security Identity": "Security & Identity",
         "Marketplace": "Google Cloud Marketplace"
-      }
+      },
+      "file": "google-cloud-categories.excalidrawlib"
     }
   ]
 }
