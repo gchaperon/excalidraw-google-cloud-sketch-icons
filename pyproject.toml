@@ -1,0 +1,13 @@
+[project]
+name = "excalidraw-google-cloud-sketch-icons"
+version = "0.1.0"
+description = "Pipeline that builds hand-drawn Excalidraw libraries from Google Cloud's official icons"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "pillow>=10.0",
+    "requests>=2.31",
+    "scikit-image>=0.24",
+    "scipy>=1.13",
+]
