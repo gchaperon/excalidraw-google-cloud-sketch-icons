@@ -58,6 +58,15 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --locked
 
+      - name: Check that the API key is available
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::OPENROUTER_API_KEY is not available (environment 'openrouter', branch main only)"
+            exit 1
+          fi
+
       - name: Build changed icons
         id: build
         env:
