@@ -62,6 +62,15 @@ The previous state is downloaded from the latest release. Outputs are written to
 
 Settings (model, rounds, icon names) are in [`pipeline/config.json`](pipeline/config.json).
 
+### Formatting and linting
+
+The code is formatted and linted with [Ruff](https://docs.astral.sh/ruff/). The rules are in `pyproject.toml`.
+
+```sh
+uv run ruff format pipeline   # format
+uv run ruff check pipeline    # lint
+```
+
 ## Future work: automated updates to the Excalidraw catalog
 
 The libraries were submitted to the [Excalidraw libraries catalog](https://libraries.excalidraw.com) once, by hand, on 2026-11-14 ([excalidraw-libraries#3013](https://github.com/excalidraw/excalidraw-libraries/pull/3013) for Products, [#3014](https://github.com/excalidraw/excalidraw-libraries/pull/3014) for Categories). The daily workflow only publishes GitHub releases; it does **not** update the catalog. These notes are for whoever wants to automate that step.
