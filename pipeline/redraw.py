@@ -24,8 +24,6 @@ import requests
 from .compact import from_excalidraw, to_excalidraw
 from .render import render_icon as render
 
-ROOT = Path(__file__).resolve().parent.parent
-ENV = ROOT / ".env"
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 APP_TITLE = "excalidraw-google-cloud-sketch-icons"  # shown in the OpenRouter activity log
 
@@ -77,21 +75,18 @@ Your shapes:
 
 
 def key():
-    """Return the OpenRouter API key.
+    """Return the OpenRouter API key from the environment variable OPENROUTER_API_KEY.
 
-    The key comes from the environment variable OPENROUTER_API_KEY, else from the
-    ``OPENROUTER_API_KEY=...`` line of the .env file at the repository root.
+    To read it from a .env file, run with ``uv run --env-file .env ...``.
 
     Raises:
-        SystemExit: If neither has the key.
+        SystemExit: If the variable is not set or is empty.
     """
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return os.environ["OPENROUTER_API_KEY"]
-    lines = ENV.read_text().splitlines() if ENV.exists() else []
-    for line in lines:
-        if line.startswith("OPENROUTER_API_KEY="):
-            return line.split("=", 1)[1].strip()
-    raise SystemExit("OPENROUTER_API_KEY is not set (environment or .env)")
+    if k := os.environ.get("OPENROUTER_API_KEY"):
+        return k
+    raise SystemExit(
+        "OPENROUTER_API_KEY is not set (export it, or use `uv run --env-file .env ...`)"
+    )
 
 
 def png_uri(path):
