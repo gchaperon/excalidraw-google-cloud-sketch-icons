@@ -1,10 +1,11 @@
 import json
+import re
 import types
 
 import httpx2
 import pytest
 
-from pipeline import redraw
+from pipeline import compact, redraw
 
 from .conftest import DATA, FakeRenderer, mock_client, needs_rsvg
 
@@ -18,8 +19,11 @@ def answer(shapes, note="Made it simpler."):
 # --- parse ---------------------------------------------------------------------------------
 
 
-def test_parse_returns_shapes_and_note():
-    assert redraw.parse(answer(SHAPES)) == (SHAPES, "Made it simpler.")
+def test_parse_returns_validated_shapes_and_note():
+    shapes, note = redraw.parse(answer(SHAPES))
+
+    assert json.loads(compact.dump(shapes)) == SHAPES  # 10 == 10.0
+    assert note == "Made it simpler."
 
 
 def test_parse_uses_the_last_json_block():
@@ -27,14 +31,32 @@ def test_parse_uses_the_last_json_block():
         f'Note.\n```json\n{{"shapes": []}}\n```\nFixed:\n```\n{json.dumps({"shapes": SHAPES})}\n```'
     )
 
-    assert redraw.parse(msg) == (SHAPES, "Note.")
+    shapes, note = redraw.parse(msg)
+
+    assert (len(shapes), note) == (1, "Note.")
 
 
 @pytest.mark.parametrize(
-    "msg", [None, "", "no code block", "```json\n{not json}\n```", '```json\n{"other": 1}\n```']
+    ("msg", "reason"),
+    [
+        (None, "empty answer"),
+        ("", "empty answer"),
+        ("no code block", "no fenced JSON block"),
+        ("```json\n{not json}\n```", "invalid shapes: : Invalid JSON"),
+        ('```json\n{"other": 1}\n```', "invalid shapes: shapes: Field required"),
+        (answer([{**SHAPES[0], "c": "blue"}]), "invalid shapes: shapes.0.ellipse.c: String should"),
+    ],
 )
-def test_parse_rejects_invalid_answers(msg):
-    assert redraw.parse(msg) == (None, "")
+def test_parse_rejects_invalid_answers(msg, reason):
+    with pytest.raises(redraw.InvalidAnswer, match=re.escape(reason)):
+        redraw.parse(msg)
+
+
+def test_parse_summarizes_many_errors():
+    bad = [{**SHAPES[0], "c": "blue"}] * 5
+
+    with pytest.raises(redraw.InvalidAnswer, match=r"\(\+2 more\)$"):
+        redraw.parse(answer(bad))
 
 
 # --- key -----------------------------------------------------------------------------------
@@ -210,7 +232,7 @@ async def test_process_keeps_the_last_valid_answer(fake_model, tmp_path, caplog)
     ]
     assert "Icon: Big Query" in fake_model.calls[0][0]
     assert '"x": 1.0' in fake_model.calls[0][0]  # approach B shapes are in the prompt
-    assert "Big Query round 2: could not parse answer" in caplog.text
+    assert "Big Query round 2: invalid answer: no fenced JSON block" in caplog.text
     # The approach B drawing and each valid answer are rendered, without the label.
     rendered = fake_model.renderer.calls
     assert [png for png, _ in rendered] == [
