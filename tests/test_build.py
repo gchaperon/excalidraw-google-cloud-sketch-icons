@@ -6,25 +6,24 @@ import zipfile
 
 import pytest
 
-from pipeline import build
+from pipeline import build, config
 
 ZIP_URL = "https://icons.example/lib.zip"
 RELEASE = "https://github.com/owner/repo/releases/latest/download/"
+LIBRARY = config.Library(
+    id="lib",
+    title="Test library",
+    zip=ZIP_URL,
+    root="Icons",
+    names={"Folder C": "Nice Name"},
+    file="lib.excalidrawlib",
+)
 CONFIG = {
     "repo": "owner/repo",
     "model": "some/model",
     "rounds": 1,
     "workers": 2,
-    "libraries": [
-        {
-            "id": "lib",
-            "title": "Test library",
-            "zip": ZIP_URL,
-            "root": "Icons",
-            "names": {"Folder C": "Nice Name"},
-            "file": "lib.excalidrawlib",
-        }
-    ],
+    "libraries": [LIBRARY.model_dump()],
 }
 SVGS = {"A": "<svg>a</svg>", "B": "<svg>b-new</svg>", "Folder C": "<svg>c</svg>"}
 
@@ -68,11 +67,11 @@ def library(*items):
 def test_fetch_icons_reads_one_svg_per_folder(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(build, "download", lambda url: icons_zip())
 
-    icons = build.fetch_icons(CONFIG["libraries"][0], tmp_path)
+    icons = build.fetch_icons(LIBRARY, tmp_path)
 
     assert sorted(icons) == ["A", "B", "Nice Name"]
-    assert icons["Nice Name"]["folder"] == "Folder C"
-    assert icons["A"]["sha256"] == sha(SVGS["A"])
+    assert icons["Nice Name"].folder == "Folder C"
+    assert icons["A"].sha256 == sha(SVGS["A"])
     assert "lib/Two SVGs: expected 1 SVG, found 2; skipped" in caplog.text
 
 
@@ -81,14 +80,14 @@ def test_fetch_icons_refuses_unsafe_paths(monkeypatch, tmp_path, member):
     monkeypatch.setattr(build, "download", lambda url: make_zip({member: "x"}))
 
     with pytest.raises(SystemExit, match="unsafe path"):
-        build.fetch_icons(CONFIG["libraries"][0], tmp_path)
+        build.fetch_icons(LIBRARY, tmp_path)
 
 
 def test_fetch_icons_missing_zip(monkeypatch, tmp_path):
     monkeypatch.setattr(build, "download", lambda url: None)
 
     with pytest.raises(SystemExit, match="not found"):
-        build.fetch_icons(CONFIG["libraries"][0], tmp_path)
+        build.fetch_icons(LIBRARY, tmp_path)
 
 
 # --- main ----------------------------------------------------------------------------------
@@ -97,10 +96,10 @@ def test_fetch_icons_missing_zip(monkeypatch, tmp_path):
 @pytest.fixture
 def run(monkeypatch, tmp_path):
     """Run build.main() offline. The model fails for icon "B", so B uses the fallback."""
-    config = tmp_path / "config.json"
-    config.write_text(json.dumps(CONFIG))
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(CONFIG))
     github_output = tmp_path / "github_output"
-    monkeypatch.setattr(build, "CONFIG", config)
+    monkeypatch.setattr(build.config, "PATH", config_path)
     monkeypatch.setattr(build, "DIST", tmp_path / "dist")
     monkeypatch.setattr(build, "WORK", tmp_path / "build")
     monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))

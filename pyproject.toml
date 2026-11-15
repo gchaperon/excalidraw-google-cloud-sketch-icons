@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0",
     "pillow>=10.0",
+    "pydantic>=2.14.3",
     "requests>=2.31",
     "scikit-image>=0.24",
     "scipy>=1.13",
@@ -17,6 +18,7 @@ dev = [
     "pytest>=9.2.0",
     "ruff>=0.17.5",
     "syrupy>=7.0.1",
+    "ty>=0.0.104",
 ]
 
 [tool.ruff]
@@ -30,6 +32,7 @@ select = [
     "I",       # isort
     "N",       # pep8-naming
     "D",       # pydocstyle
+    "ANN",     # flake8-annotations: every function is annotated (ty checks them)
     "UP",      # pyupgrade
     "B",       # flake8-bugbear
     "C4",      # flake8-comprehensions
@@ -38,11 +41,15 @@ select = [
     "RUF",     # ruff-specific rules
 ]
 
+ignore = [
+    "ANN401",  # Any is right for JSON data (Excalidraw elements, model answers)
+]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D"]  # test names describe the tests
+"tests/**" = ["D", "ANN"]  # test names describe the tests; ty still checks them
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

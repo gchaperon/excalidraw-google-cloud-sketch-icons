@@ -7,6 +7,33 @@ the origin.
 
 import random
 import time
+from collections.abc import Iterable
+from typing import Any, Literal, TypedDict
+
+type Element = dict[str, Any]
+"""An Excalidraw element. It has many type-specific keys, so it stays a plain dict."""
+
+type Point = tuple[float, float]
+
+
+class LibraryItem(TypedDict):
+    """One item of an .excalidrawlib file."""
+
+    id: str
+    status: Literal["unpublished", "published"]
+    created: int
+    name: str
+    elements: list[Element]
+
+
+class LibraryFile(TypedDict):
+    """An .excalidrawlib document, version 2."""
+
+    type: Literal["excalidrawlib"]
+    version: Literal[2]
+    source: str
+    libraryItems: list[LibraryItem]
+
 
 ICON = 120  # icon box size in Excalidraw px
 STROKE_WIDTH = 6
@@ -19,16 +46,25 @@ FONT_EXCALIFONT = 5  # Excalidraw fontFamily id
 LABEL_COLOR = "#1e1e1e"
 
 
-def _now_ms():
+def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def new_group():
+def new_group() -> str:
     """Return a new random Excalidraw group id."""
     return f"g{random.randrange(1 << 40):x}"
 
 
-def element(kind, x, y, w, h, color, group, **props):
+def element(
+    kind: str,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    color: str,
+    group: str,
+    **props: Any,
+) -> Element:
     """Return an Excalidraw element of type ``kind`` with the common properties set.
 
     Args:
@@ -70,7 +106,14 @@ def element(kind, x, y, w, h, color, group, **props):
     } | props
 
 
-def line(points, color, group, curved, closed=False, **props):
+def line(
+    points: Iterable[tuple[float, float] | list[float]],
+    color: str,
+    group: str,
+    curved: bool,
+    closed: bool = False,
+    **props: Any,
+) -> Element:
     """Return an Excalidraw line through absolute ``points`` = [(x, y), ...].
 
     Args:
@@ -106,7 +149,7 @@ def line(points, color, group, curved, closed=False, **props):
     )
 
 
-def label(name, group):
+def label(name: str, group: str) -> Element:
     """Return the Excalifont label that goes under the icon.
 
     Names longer than 14 characters wrap to two lines, at the word break that gives the
@@ -119,7 +162,7 @@ def label(name, group):
     words, lines = name.split(), [name]
     if len(name) > 14 and len(words) > 1:
 
-        def imbalance(i):
+        def imbalance(i: int) -> int:
             return abs(len(" ".join(words[:i])) - len(" ".join(words[i:])))
 
         cut = min(range(1, len(words)), key=imbalance)
@@ -148,7 +191,7 @@ def label(name, group):
     )
 
 
-def item(item_id, name, elements):
+def item(item_id: str, name: str, elements: list[Element]) -> LibraryItem:
     """Return a library item."""
     return {
         "id": item_id,
@@ -159,6 +202,6 @@ def item(item_id, name, elements):
     }
 
 
-def library(items, source):
+def library(items: list[LibraryItem], source: str) -> LibraryFile:
     """Return an .excalidrawlib document (version 2)."""
     return {"type": "excalidrawlib", "version": 2, "source": source, "libraryItems": items}
