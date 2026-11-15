@@ -67,3 +67,14 @@ def test_label_wraps_long_names_on_two_balanced_lines(name, text):
 
 def test_to_excalidraw_snapshot(deterministic, snapshot_json):
     assert as_json(compact.to_excalidraw(SHAPES, "Cloud Run Functions")) == snapshot_json
+
+
+def test_shapes_from_the_format_match_the_answer_schema():
+    """Every shape that from_excalidraw writes is allowed by the schema the model must follow."""
+    items = compact.ANSWER_SCHEMA["properties"]["shapes"]["items"]["anyOf"]
+    by_type = {variant["properties"]["t"]["enum"][0]: variant for variant in items}
+
+    for shape in SHAPES:
+        variant = by_type[shape["t"]]
+        assert set(variant["required"]) <= set(shape)
+        assert set(shape) <= set(variant["properties"])

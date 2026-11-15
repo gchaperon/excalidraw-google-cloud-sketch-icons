@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx2
 
 from . import excalidraw as ex
-from .compact import Shape, from_excalidraw, to_excalidraw
+from .compact import ANSWER_SCHEMA, Shape, from_excalidraw, to_excalidraw
 from .render import Renderer, RenderError
 
 log = logging.getLogger(__name__)
@@ -58,8 +58,7 @@ Shape format (JSON):
   {"t":"ellipse","c":"#ea4335","x":..,"y":..,"w":..,"h":..,"fill":"none|solid|hachure"}
   {"t":"rect","c":"#34a853","x":..,"y":..,"w":..,"h":..,"fill":"none","round":false}
 
-Answer with a short note of what you changed (max 3 sentences), then ONE ```json code block
-that contains {"shapes":[...]} and nothing else."""  # noqa: E501
+Answer with JSON: {"note": a short note of what you changed (max 3 sentences), "shapes": [...]}."""  # noqa: E501
 
 ROUND1 = """Icon: {name}
 
@@ -152,6 +151,10 @@ async def ask(
         "max_tokens": 16000,
         "usage": {"include": True},
         "reasoning": {"effort": "medium"},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "icon_shapes", "strict": True, "schema": ANSWER_SCHEMA},
+        },
         "messages": [
             {"role": "system", "content": STYLE},
             {"role": "user", "content": content},
@@ -193,27 +196,25 @@ async def ask(
 
 
 def parse(msg: str | None) -> tuple[list[Shape] | None, str]:
-    """Extract the shapes and the note from a model answer.
+    """Extract the shapes and the note from a model answer (JSON, see ANSWER_SCHEMA).
 
     Args:
         msg: The answer text, or None.
 
     Returns:
-        A tuple (shapes, note). ``shapes`` comes from the last fenced JSON block with a
-        "shapes" key, and ``note`` is the text before the first fence. If there is no
-        valid block, (None, "").
+        A tuple (shapes, note). If the answer is not a JSON object with a list of
+        shapes, (None, "").
     """
     if not msg:
         return None, ""
-    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", msg, re.S)
-    if not blocks:
-        return None, ""
     try:
-        shapes = json.loads(blocks[-1])["shapes"]
-    except Exception:
+        answer = json.loads(msg)
+    except json.JSONDecodeError:
         return None, ""
-    note = msg.split("```")[0].strip()
-    return shapes, note
+    if not isinstance(answer, dict) or not isinstance(answer.get("shapes"), list):
+        return None, ""
+    note = answer.get("note")
+    return answer["shapes"], note.strip() if isinstance(note, str) else ""
 
 
 async def process(

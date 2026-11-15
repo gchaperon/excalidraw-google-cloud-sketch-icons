@@ -21,6 +21,59 @@ type Shape = dict[str, Any]
 """A compact shape, as described above. It comes from the model, so it is not trusted."""
 
 DEFAULT_COLOR = "#1e1e1e"
+
+_FILL = {"type": "string", "enum": ["none", "solid", "hachure"]}
+_BOX = {k: {"type": "number"} for k in ("x", "y", "w", "h")}
+_COMMON = {"c": {"type": "string", "description": "color, #rrggbb"}, "fill": _FILL}
+
+ANSWER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "note": {"type": "string", "description": "what you changed, max 3 sentences"},
+        "shapes": {
+            "type": "array",
+            "items": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "t": {"type": "string", "enum": ["line"]},
+                            "pts": {
+                                "type": "array",
+                                "items": {"type": "array", "items": {"type": "number"}},
+                            },
+                            "curve": {"type": "boolean"},
+                            "closed": {"type": "boolean"},
+                            **_COMMON,
+                        },
+                        "required": ["t", "c", "pts", "curve"],
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "t": {"type": "string", "enum": ["ellipse"]},
+                            **_BOX,
+                            **_COMMON,
+                        },
+                        "required": ["t", "c", "x", "y", "w", "h"],
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "t": {"type": "string", "enum": ["rect"]},
+                            **_BOX,
+                            "round": {"type": "boolean"},
+                            **_COMMON,
+                        },
+                        "required": ["t", "c", "x", "y", "w", "h"],
+                    },
+                ]
+            },
+        },
+    },
+    "required": ["note", "shapes"],
+}
+"""JSON schema of a model answer: {"note": ..., "shapes": [compact shapes]}."""
 FILLS = ("solid", "hachure", "cross-hatch")
 
 

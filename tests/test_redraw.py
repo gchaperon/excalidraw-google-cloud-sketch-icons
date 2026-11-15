@@ -12,26 +12,31 @@ SHAPES = [{"t": "ellipse", "c": "#4285f4", "x": 10, "y": 10, "w": 50, "h": 50}]
 
 
 def answer(shapes, note="Made it simpler."):
-    return f"{note}\n```json\n{json.dumps({'shapes': shapes})}\n```"
+    return json.dumps({"note": note, "shapes": shapes})
 
 
 # --- parse ---------------------------------------------------------------------------------
 
 
 def test_parse_returns_shapes_and_note():
-    assert redraw.parse(answer(SHAPES)) == (SHAPES, "Made it simpler.")
+    assert redraw.parse(answer(SHAPES, " Made it simpler. ")) == (SHAPES, "Made it simpler.")
 
 
-def test_parse_uses_the_last_json_block():
-    msg = (
-        f'Note.\n```json\n{{"shapes": []}}\n```\nFixed:\n```\n{json.dumps({"shapes": SHAPES})}\n```'
-    )
-
-    assert redraw.parse(msg) == (SHAPES, "Note.")
+def test_parse_accepts_a_missing_note():
+    assert redraw.parse(json.dumps({"shapes": SHAPES})) == (SHAPES, "")
 
 
 @pytest.mark.parametrize(
-    "msg", [None, "", "no code block", "```json\n{not json}\n```", '```json\n{"other": 1}\n```']
+    "msg",
+    [
+        None,
+        "",
+        "no json",
+        "[1, 2]",
+        '{"note": "x"}',
+        '{"shapes": "not a list"}',
+        "```json\n{}\n```",
+    ],
 )
 def test_parse_rejects_invalid_answers(msg):
     assert redraw.parse(msg) == (None, "")
@@ -104,6 +109,8 @@ async def test_ask_sends_text_then_images_and_returns_cost(model):
     user = body["messages"][1]["content"]
     assert user[0] == {"type": "text", "text": "prompt"}
     assert user[1]["image_url"]["url"] == "data:image/png;base64,cG5n"
+    schema = body["response_format"]["json_schema"]["schema"]
+    assert schema["required"] == ["note", "shapes"]
 
 
 @pytest.mark.anyio
