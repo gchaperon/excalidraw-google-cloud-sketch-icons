@@ -56,12 +56,24 @@ def snapshot_json(snapshot):
     return snapshot.use_extension(JSONSnapshotExtension)
 
 
-def as_json(value):
+def as_json(value, digits=6):
     """Round-trip through JSON, as the build does when it writes the libraries.
 
-    This also turns numpy scalars into plain Python numbers.
+    This also turns numpy scalars into plain Python numbers. Floats are rounded to
+    ``digits`` decimals: numpy's least-squares fit can differ in the last bits on
+    different CPUs, and a snapshot must not depend on the machine.
     """
-    return json.loads(json.dumps(value))
+    return _round_floats(json.loads(json.dumps(value)), digits)
+
+
+def _round_floats(value, digits):
+    if isinstance(value, float):
+        return round(value, digits)
+    if isinstance(value, list):
+        return [_round_floats(v, digits) for v in value]
+    if isinstance(value, dict):
+        return {k: _round_floats(v, digits) for k, v in value.items()}
+    return value
 
 
 @pytest.fixture
