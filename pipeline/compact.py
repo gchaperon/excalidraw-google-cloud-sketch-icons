@@ -11,52 +11,15 @@ shorter. Coordinates are in a 120x120 icon box, with the origin at the top left:
      "round": false}
 
 Optional on any shape: "sw" (stroke width, default 6).
-
-This module also makes the text label that goes under every icon.
 """
 
-import random
-import time
+from . import excalidraw as ex
 
-ICON = 120  # icon box size in Excalidraw px
-FONT_SIZE = 20
-LINE_HEIGHT = 1.25
-CHAR_W = 0.55  # approximate average Excalifont glyph width, as a fraction of FONT_SIZE
-FONT_EXCALIFONT = 5  # Excalidraw fontFamily id
+DEFAULT_COLOR = "#1e1e1e"
+FILLS = ("solid", "hachure", "cross-hatch")
 
 
-def _base(kind, x, y, w, h, color, group, sw, rough):
-    """Return an Excalidraw element of type ``kind`` with the common properties set."""
-    return {
-        "id": f"{kind[0]}{random.randrange(1 << 40):x}",
-        "type": kind,
-        "x": x,
-        "y": y,
-        "width": w,
-        "height": h,
-        "angle": 0,
-        "strokeColor": color,
-        "backgroundColor": "transparent",
-        "fillStyle": "solid",
-        "strokeWidth": sw,
-        "strokeStyle": "solid",
-        "roughness": rough,
-        "opacity": 100,
-        "groupIds": [group],
-        "frameId": None,
-        "roundness": None,
-        "seed": random.randrange(1 << 31),
-        "version": 1,
-        "versionNonce": random.randrange(1 << 31),
-        "isDeleted": False,
-        "boundElements": None,
-        "updated": int(time.time() * 1000),
-        "link": None,
-        "locked": False,
-    }
-
-
-def to_excalidraw(shapes, name, rough=1):
+def to_excalidraw(shapes, name):
     """Convert compact shapes to Excalidraw elements, and add the label.
 
     Shapes with an unknown type and lines with fewer than 2 points are skipped.
@@ -64,85 +27,36 @@ def to_excalidraw(shapes, name, rough=1):
     Args:
         shapes: List of compact shapes (see the module docstring).
         name: Text of the label.
-        rough: Excalidraw roughness (0 architect, 1 artist, 2 cartoonist).
 
     Returns:
         The elements, all in one new group. The label is the last element.
     """
-    group = f"g{random.randrange(1 << 40):x}"
+    group = ex.new_group()
     els = []
     for s in shapes:
-        t, c, sw = s.get("t"), s.get("c", "#1e1e1e"), float(s.get("sw", 6))
+        t, c = s.get("t"), s.get("c", DEFAULT_COLOR)
+        props = {"strokeWidth": float(s.get("sw", ex.STROKE_WIDTH))}
         fill = s.get("fill", "none")
+        if fill in FILLS:
+            props |= {"backgroundColor": c, "fillStyle": fill}
         if t == "line":
-            pts = [[float(p[0]), float(p[1])] for p in s.get("pts", [])]
+            pts = s.get("pts", [])
             if len(pts) < 2:
                 continue
-            if s.get("closed") and pts[0] != pts[-1]:
-                pts.append(pts[0])
-            x0, y0 = pts[0]
-            rel = [[px - x0, py - y0] for px, py in pts]  # Excalidraw points are relative
-            xs, ys = [p[0] for p in rel], [p[1] for p in rel]
-            e = _base("line", x0, y0, max(xs) - min(xs), max(ys) - min(ys), c, group, sw, rough)
-            e.update(
-                points=rel,
-                lastCommittedPoint=None,
-                startBinding=None,
-                endBinding=None,
-                startArrowhead=None,
-                endArrowhead=None,
-                roundness={"type": 2} if s.get("curve") else None,
-            )
+            e = ex.line(pts, c, group, bool(s.get("curve")), bool(s.get("closed")), **props)
         elif t in ("ellipse", "rect"):
             kind = "ellipse" if t == "ellipse" else "rectangle"
             x, y, w, h = (float(s[k]) for k in ("x", "y", "w", "h"))
-            e = _base(kind, x, y, w, h, c, group, sw, rough)
+            e = ex.element(kind, x, y, w, h, c, group, **props)
             if t == "rect" and s.get("round"):
                 e["roundness"] = {"type": 3}
         else:
             continue
-        if fill in ("solid", "hachure", "cross-hatch"):
-            e.update(backgroundColor=c, fillStyle=fill)
-            if t == "ellipse" and fill == "solid" and max(e["width"], e["height"]) <= 16:
-                e["strokeWidth"] = 1  # small dot: thin outline keeps its original size
+        if t == "ellipse" and fill == "solid" and max(e["width"], e["height"]) <= 16:
+            e["strokeWidth"] = 1  # small dot: thin outline keeps its original size
         els.append(e)
-    els.append(label(name, group))
+    els.append(ex.label(name, group))
     return els
-
-
-def label(name, group):
-    """Return the Excalifont label that goes under the icon.
-
-    Names longer than 14 characters wrap to two lines, at the word break that gives the
-    most equal line lengths.
-
-    Args:
-        name: Text of the label.
-        group: Excalidraw group id, so that the label moves with the icon.
-    """
-    words, lines = name.split(), [name]
-    if len(name) > 14 and len(words) > 1:
-
-        def imbalance(i):
-            return abs(len(" ".join(words[:i])) - len(" ".join(words[i:])))
-
-        cut = min(range(1, len(words)), key=imbalance)
-        lines = [" ".join(words[:cut]), " ".join(words[cut:])]
-    text = "\n".join(lines)
-    w = max(len(line) for line in lines) * FONT_SIZE * CHAR_W
-    h = len(lines) * FONT_SIZE * LINE_HEIGHT
-    return {
-        **_base("text", (ICON - w) / 2, ICON + 8, w, h, "#1e1e1e", group, 1, 1),
-        "text": text,
-        "originalText": text,
-        "fontSize": FONT_SIZE,
-        "fontFamily": FONT_EXCALIFONT,
-        "textAlign": "center",
-        "verticalAlign": "top",
-        "containerId": None,
-        "lineHeight": LINE_HEIGHT,
-        "autoResize": True,
-    }
 
 
 def _round1(v):

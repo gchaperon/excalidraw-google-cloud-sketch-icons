@@ -18,11 +18,9 @@ import argparse
 import functools
 import hashlib
 import json
+import logging
 import os
-import sys
 import tempfile
-import time
-import types
 import urllib.error
 import urllib.request
 import zipfile
@@ -30,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import convert, redraw
-from .compact import label
+from . import excalidraw as ex
 
 REPO = Path(__file__).resolve().parent.parent
 CONFIG = Path(__file__).resolve().parent / "config.json"
@@ -39,10 +37,14 @@ WORK = REPO / "build"  # intermediate images and logs
 LOCK_FILE = "sources.lock.json"
 UA = {"User-Agent": "excalidraw-google-cloud-sketch-icons"}
 
+# Not __name__: under `python -m pipeline.build` that is "__main__", outside "pipeline".
+log = logging.getLogger("pipeline.build")
+
 
 def sha256(path):
     """Return the hex SHA-256 digest of a file."""
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    with Path(path).open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
 
 
 def download(url, timeout=120):
@@ -119,10 +121,7 @@ def fetch_icons(lib, tmp):
             continue
         svgs = sorted(p for p in svg_dir.iterdir() if p.suffix.lower() == ".svg")
         if len(svgs) != 1:
-            print(
-                f"warning: {lib['id']}/{folder}: expected 1 SVG, found {len(svgs)}; skipped",
-                file=sys.stderr,
-            )
+            log.warning("%s/%s: expected 1 SVG, found %d; skipped", lib["id"], folder, len(svgs))
             continue
         name = lib["names"].get(folder, folder)
         icons[name] = {"folder": folder, "svg": str(svgs[0]), "sha256": sha256(svgs[0])}
@@ -138,23 +137,16 @@ def fallback_item(name, b_elements):
     """
     els = list(b_elements)
     group = els[0]["groupIds"][0] if els else "g-fallback"
-    return {
-        "id": f"b-{name}",
-        "status": "unpublished",
-        "created": int(time.time() * 1000),
-        "name": name,
-        "elements": [*els, label(name, group)],
-    }
+    return ex.item(f"b-{name}", name, [*els, ex.label(name, group)])
 
 
-def process_icon(cfg, key, workdir, log, name, svg):
+def process_icon(cfg, key, workdir, name, svg):
     """Build the library item of one icon: approach B, then the model rounds (approach C).
 
     Args:
         cfg: The parsed config.json.
         key: The OpenRouter API key.
         workdir: Directory for the intermediate images.
-        log: Writable text file for the log.
         name: Display name of the icon.
         svg: Path of the source SVG.
 
@@ -162,11 +154,12 @@ def process_icon(cfg, key, workdir, log, name, svg):
         A tuple (item, cost in USD, True if the model failed and the item is the fallback).
     """
     b_elements = convert.convert(Path(svg).read_text())
-    args = types.SimpleNamespace(model=cfg["model"], rounds=cfg["rounds"])
     try:
-        item, cost = redraw.process(args, key, workdir, name, svg, b_elements, log)
-    except Exception as e:  # network or render failure: keep going with approach B
-        log.write(f"{name}: model step failed: {e!r}\n")
+        item, cost = redraw.process(
+            cfg["model"], cfg["rounds"], key, workdir, name, svg, b_elements
+        )
+    except Exception:  # network or render failure: keep going with approach B
+        log.exception("%s: model step failed", name)
         item, cost = None, 0.0
     return (item or fallback_item(name, b_elements)), cost, item is None
 
@@ -182,8 +175,37 @@ def release_notes(notes, cfg, total_cost):
     )
 
 
+def setup_logging():
+    """Log INFO to stderr and DEBUG to build/log.txt. Returns the handlers to remove later."""
+    WORK.mkdir(parents=True, exist_ok=True)
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    logfile = logging.FileHandler(WORK / "log.txt")
+    logfile.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(threadName)s: %(message)s")
+    )
+    logger = logging.getLogger("pipeline")
+    logger.setLevel(logging.DEBUG)
+    for h in (console, logfile):
+        logger.addHandler(h)
+    return console, logfile
+
+
 def main():
     """Run the build. See the module docstring for the command line."""
+    handlers = setup_logging()
+    try:
+        build()
+    finally:
+        logger = logging.getLogger("pipeline")
+        for h in handlers:
+            logger.removeHandler(h)
+            h.close()
+
+
+def build():
+    """Parse the command line and run the build."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--check", action="store_true", help="only report changes")
@@ -193,7 +215,7 @@ def main():
     prev = previous_release(cfg)
     lock = json.loads(prev[LOCK_FILE]) if prev[LOCK_FILE] else {}
     if not lock:
-        print("no previous release state found: every icon counts as new")
+        log.info("no previous release state found: every icon counts as new")
     notes, outputs, any_change, total_cost = [], {}, False, 0.0
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -211,9 +233,13 @@ def main():
             )
             removed = sorted(n for n in old if n not in icons)
             todo = sorted(icons) if a.force else added + changed
-            print(
-                f"{lib['id']}: {len(icons)} icons, "
-                f"added {added}, changed {changed}, removed {removed}"
+            log.info(
+                "%s: %d icons, added %s, changed %s, removed %s",
+                lib["id"],
+                len(icons),
+                added,
+                changed,
+                removed,
             )
             any_change |= bool(todo or removed)
             if a.check:
@@ -226,25 +252,19 @@ def main():
                 workdir = WORK / lib["id"]
                 workdir.mkdir(parents=True, exist_ok=True)
                 key = redraw.key()
-                with (
-                    (workdir / "log.txt").open("a") as log,
-                    ThreadPoolExecutor(cfg["workers"]) as ex,
-                ):
-                    run = functools.partial(process_icon, cfg, key, workdir, log)
-                    results = dict(
-                        zip(todo, ex.map(run, todo, [icons[n]["svg"] for n in todo]), strict=True)
-                    )
+                run = functools.partial(process_icon, cfg, key, workdir)
+                with ThreadPoolExecutor(cfg["workers"], thread_name_prefix="icon") as pool:
+                    svgs = [icons[n]["svg"] for n in todo]
+                    results = dict(zip(todo, pool.map(run, todo, svgs), strict=True))
                 for n, (item, cost, failed) in results.items():
                     items[n] = item
                     total_cost += cost
                     if failed:
                         fallbacks.append(n)
-            outputs[lib["file"]] = {
-                "type": "excalidrawlib",
-                "version": 2,
-                "source": f"https://github.com/{cfg['repo']}",
-                "libraryItems": [items[n] for n in sorted(icons, key=str.lower) if n in items],
-            }
+            outputs[lib["file"]] = ex.library(
+                [items[n] for n in sorted(icons, key=str.lower) if n in items],
+                source=f"https://github.com/{cfg['repo']}",
+            )
             sections = (
                 ("Added", added),
                 ("Changed", changed),
@@ -261,7 +281,7 @@ def main():
             (DIST / file_name).write_text(json.dumps(lib_json))
         (DIST / LOCK_FILE).write_text(json.dumps(lock, indent=1, ensure_ascii=False))
         (DIST / "notes.md").write_text(release_notes(notes, cfg, total_cost))
-    print(f"changed={str(any_change).lower()} cost=${total_cost:.2f}")
+    log.info("changed=%s cost=$%.2f", str(any_change).lower(), total_cost)
     if os.environ.get("GITHUB_OUTPUT"):
         with Path(os.environ["GITHUB_OUTPUT"]).open("a") as f:
             f.write(f"changed={str(any_change).lower()}\n")

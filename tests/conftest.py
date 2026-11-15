@@ -6,8 +6,6 @@ from pathlib import Path
 import pytest
 from syrupy.extensions.json import JSONSnapshotExtension
 
-from pipeline import convert
-
 DATA = Path(__file__).parent / "data"
 
 needs_rsvg = pytest.mark.skipif(
@@ -19,7 +17,6 @@ needs_rsvg = pytest.mark.skipif(
 def deterministic(monkeypatch):
     """Make element ids, seeds and timestamps repeatable."""
     random.seed(1234)
-    monkeypatch.setattr(convert, "_ids", 0)
     monkeypatch.setattr("time.time", lambda: 1_700_000_000.0)
 
 

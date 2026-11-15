@@ -5,15 +5,15 @@ Each icon goes through ``rounds`` model calls:
   next prompts: the official icon, the rendering of the last valid answer and its shapes
 The first prompt is sent again until an answer is valid.
 The model answers with compact shapes (see compact.py). The last answer that parses is
-kept. The model is called through OpenRouter. The per-round PNGs and a log with tokens and
-cost (from OpenRouter usage accounting) are written to the build directory.
+kept. The model is called through OpenRouter. The per-round PNGs are written to the build
+directory; tokens and cost (from OpenRouter usage accounting) go to the DEBUG log.
 
 Needs `rsvg-convert` (librsvg) and Chrome or Chromium (see render.py).
 """
 
 import base64
-import io
 import json
+import logging
 import os
 import re
 import subprocess
@@ -22,8 +22,11 @@ from pathlib import Path
 
 import requests
 
+from . import excalidraw as ex
 from .compact import from_excalidraw, to_excalidraw
 from .render import render_icon as render
+
+log = logging.getLogger(__name__)
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 APP_TITLE = "excalidraw-google-cloud-sketch-icons"  # shown in the OpenRouter activity log
@@ -95,17 +98,17 @@ def png_uri(path):
     return "data:image/png;base64," + base64.b64encode(Path(path).read_bytes()).decode()
 
 
-def ask(model, k, text, images, log):
+def ask(model, key, text, images, icon):
     """Send one prompt with images to the model.
 
     A non-200 answer is tried again, up to 3 attempts in total.
 
     Args:
         model: OpenRouter model id.
-        k: OpenRouter API key.
+        key: OpenRouter API key.
         text: The user prompt. The system prompt is always STYLE.
         images: Paths of PNG files, sent after the text in this order.
-        log: Writable text file for HTTP errors, timing, tokens and cost.
+        icon: Icon name, for the log.
 
     Returns:
         A tuple (answer text, cost in USD). If all attempts fail, or the answer has no
@@ -125,27 +128,30 @@ def ask(model, k, text, images, log):
             {"role": "user", "content": content},
         ],
     }
-    headers = {"Authorization": f"Bearer {k}", "X-Title": APP_TITLE}
+    headers = {"Authorization": f"Bearer {key}", "X-Title": APP_TITLE}
     t0 = time.time()
     for attempt in range(3):
         r = requests.post(API_URL, timeout=600, headers=headers, json=body)
         if r.status_code == 200:
             break
-        log.write(f"  HTTP {r.status_code}: {r.text[:300]}\n")
-        log.flush()
+        log.warning("%s: HTTP %s: %s", icon, r.status_code, r.text[:300])
         time.sleep(5 * (attempt + 1))
     else:
         return None, 0.0
     d = r.json()
     if "choices" not in d:
-        log.write(f"  no choices: {json.dumps(d)[:300]}\n")
+        log.warning("%s: no choices: %s", icon, json.dumps(d)[:300])
         return None, 0.0
     msg = d["choices"][0]["message"].get("content") or ""
     u = d.get("usage", {})
     cost = float(u.get("cost") or 0)
-    log.write(
-        f"  {time.time() - t0:.0f}s in={u.get('prompt_tokens')} "
-        f"out={u.get('completion_tokens')} cost=${cost:.4f}\n"
+    log.debug(
+        "%s: %.0fs in=%s out=%s cost=$%.4f",
+        icon,
+        time.time() - t0,
+        u.get("prompt_tokens"),
+        u.get("completion_tokens"),
+        cost,
     )
     return msg, cost
 
@@ -172,62 +178,48 @@ def parse(msg):
     return shapes, note
 
 
-def process(a, k, od, name, svg, b_els, log):
+def process(model, rounds, key, workdir, name, svg, b_els):
     """Run all rounds for one icon.
 
-    The log lines of each round are collected first and then written together, so that
-    the lines of icons that run in parallel do not mix.
-
     Args:
-        a: Options with ``model`` (OpenRouter model id) and ``rounds`` (number of rounds).
-        k: OpenRouter API key.
-        od: Output directory for the PNGs and the final shapes JSON.
+        model: OpenRouter model id.
+        rounds: Number of model calls.
+        key: OpenRouter API key.
+        workdir: Output directory for the PNGs and the final shapes JSON.
         name: Display name of the icon.
         svg: Path of the official SVG.
         b_els: Approach B elements of the icon.
-        log: Writable text file, shared between threads.
 
     Returns:
         A tuple (library item or None if no round gave valid shapes, cost in USD).
     """
-    od = Path(od)
+    workdir = Path(workdir)
     fn = re.sub(r"\W+", "_", name)  # file name stem
-    orig = od / f"{fn}_orig.png"
+    orig = workdir / f"{fn}_orig.png"
     subprocess.run(
         ["rsvg-convert", "-w", "320", "-h", "320", "-b", "white", "-o", orig, svg],
         check=True,
     )
-    b_png = od / f"{fn}_b.png"
+    b_png = workdir / f"{fn}_b.png"
     render(b_els, b_png)
     shapes = from_excalidraw(b_els)
     best, cur_png, cost_sum = None, None, 0.0
-    for rnd in range(1, a.rounds + 1):
+    for rnd in range(1, rounds + 1):
         if best is None:  # no valid answer yet: start from approach B
             text, imgs = ROUND1.format(name=name, shapes=json.dumps(shapes)), [orig, b_png]
         else:
             text, imgs = ROUND2.format(shapes=json.dumps(best)), [orig, cur_png]
-        buf = io.StringIO()  # per-icon buffered log
-        msg, cost = ask(a.model, k, text, imgs, buf)
+        msg, cost = ask(model, key, text, imgs, name)
         cost_sum += cost
         new, note = parse(msg)
-        log.write(f"{name} round {rnd}\n" + buf.getvalue())
         if not new:
-            log.write(f"  could not parse answer: {(msg or '')[:300]!r}\n")
-            log.flush()
+            log.warning("%s round %d: could not parse answer: %r", name, rnd, (msg or "")[:300])
             continue
         best = new
-        cur_png = od / f"{fn}_r{rnd}.png"
+        cur_png = workdir / f"{fn}_r{rnd}.png"
         render(to_excalidraw(best, name), cur_png)
-        log.write(f"  {len(best)} shapes. note: {note[:300]}\n")
-        log.flush()
-    item = None
-    if best:
-        item = {
-            "id": f"c-{fn}",
-            "status": "unpublished",
-            "created": int(time.time() * 1000),
-            "name": name,
-            "elements": to_excalidraw(best, name),
-        }
-        (od / f"{fn}_shapes.json").write_text(json.dumps(best))
-    return item, cost_sum
+        log.info("%s round %d: %d shapes. note: %s", name, rnd, len(best), note[:300])
+    if not best:
+        return None, cost_sum
+    (workdir / f"{fn}_shapes.json").write_text(json.dumps(best))
+    return ex.item(f"c-{fn}", name, to_excalidraw(best, name)), cost_sum

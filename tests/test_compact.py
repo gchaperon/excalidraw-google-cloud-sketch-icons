@@ -1,6 +1,6 @@
 import pytest
 
-from pipeline import compact
+from pipeline import compact, excalidraw
 
 from .conftest import as_json
 
@@ -62,7 +62,7 @@ def test_small_solid_dot_gets_a_thin_outline():
     ],
 )
 def test_label_wraps_long_names_on_two_balanced_lines(name, text):
-    assert compact.label(name, "g")["text"] == text
+    assert excalidraw.label(name, "g")["text"] == text
 
 
 def test_to_excalidraw_snapshot(deterministic, snapshot_json):
