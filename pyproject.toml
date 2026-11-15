@@ -52,6 +52,12 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D", "ANN"]  # test names describe the tests; ty still checks them
 
+[tool.ty.rules]
+# The strictest setting: every rule is an error, including the ones that are off by
+# default. New rules from a ty upgrade apply at once; ty is pinned in uv.lock, so an
+# upgrade is always its own PR.
+all = "error"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]  # pipeline/ is not an installed package

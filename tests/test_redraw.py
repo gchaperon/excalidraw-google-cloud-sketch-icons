@@ -313,3 +313,18 @@ async def test_process_logs_every_answer(fake_model, tmp_path, caplog):
     )
 
     assert "X round 1 answer: garbage" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_ask_accepts_null_content_and_missing_usage(model):
+    model.responses.append(httpx2.Response(200, json={"choices": [{"message": {"content": None}}]}))
+
+    assert await redraw.ask(model.http, "m", "prompt", [], "X") == ("", 0.0)
+
+
+@pytest.mark.anyio
+async def test_ask_rejects_unexpected_responses(model, caplog):
+    model.responses.append(httpx2.Response(200, json={"choices": [{"message": {"content": 7}}]}))
+
+    assert await redraw.ask(model.http, "m", "prompt", [], "X") == (None, 0.0)
+    assert "X: unexpected response" in caplog.text

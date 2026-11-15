@@ -2,6 +2,7 @@ import json
 import random
 import shutil
 from pathlib import Path
+from typing import override
 
 import httpx2
 import pytest
@@ -30,12 +31,15 @@ class FakeRenderer(Renderer):
         self.calls = []
         self.fail = set(fail)  # PNG names whose render fails
 
+    @override
     async def __aenter__(self):
         return self
 
+    @override
     async def __aexit__(self, exc_type, exc, tb):
         pass
 
+    @override
     async def render(self, elements, out_png, size=320):
         self.calls.append((out_png.name, elements))
         if out_png.name in self.fail:

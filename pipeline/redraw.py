@@ -13,7 +13,6 @@ Needs `rsvg-convert` (librsvg) and Chrome or Chromium (see render.py).
 
 import asyncio
 import base64
-import json
 import logging
 import os
 import re
@@ -23,7 +22,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import httpx2
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import compact
 from . import excalidraw as ex
@@ -92,7 +91,7 @@ def key() -> str:
     Raises:
         SystemExit: If the variable is not set or is empty.
     """
-    if k := os.environ.get("OPENROUTER_API_KEY"):
+    if k := os.environ.get("OPENROUTER_API_KEY", ""):
         return k
     raise SystemExit(
         "OPENROUTER_API_KEY is not set (export it, or use `uv run --env-file .env ...`)"
@@ -102,6 +101,26 @@ def key() -> str:
 def png_uri(path: Path) -> str:
     """Return a PNG file as a data URI."""
     return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+class _Response(BaseModel):
+    """The parts of an OpenRouter chat completion that we use (other keys are ignored)."""
+
+    model_config = ConfigDict(strict=True)
+
+    class Choice(BaseModel):
+        class Message(BaseModel):
+            content: str | None = None
+
+        message: Message
+
+    class Usage(BaseModel):
+        cost: float | None = None
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
+
+    choices: list[Choice] = Field(min_length=1)
+    usage: Usage = Usage()
 
 
 def client(key: str) -> httpx2.AsyncClient:
@@ -175,22 +194,23 @@ async def ask(
             await asyncio.sleep(_retry_delay(r, attempt))
     else:
         return None, 0.0
-    d = r.json()
-    if "choices" not in d:
-        log.warning("%s: no choices: %s", icon, json.dumps(d)[:300])
+    try:
+        response = _Response.model_validate_json(r.content)
+    except ValidationError:
+        log.warning("%s: unexpected response: %s", icon, r.text[:300])
         return None, 0.0
-    msg = d["choices"][0]["message"].get("content") or ""
-    u = d.get("usage", {})
-    cost = float(u.get("cost") or 0)
+    usage = response.usage
+    cost = usage.cost if usage.cost is not None else 0.0
     log.debug(
         "%s: %.0fs in=%s out=%s cost=$%.4f",
         icon,
         time.monotonic() - t0,
-        u.get("prompt_tokens"),
-        u.get("completion_tokens"),
+        usage.prompt_tokens,
+        usage.completion_tokens,
         cost,
     )
-    return msg, cost
+    content = response.choices[0].message.content
+    return content if content is not None else "", cost
 
 
 class InvalidAnswer(Exception):  # noqa: N818 (an answer, not an error of our code)
@@ -211,7 +231,7 @@ def parse(msg: str | None) -> tuple[list[Shape], str]:
     Raises:
         InvalidAnswer: If the answer has no such block or any shape is invalid.
     """
-    if not msg:
+    if msg is None or not msg.strip():
         raise InvalidAnswer("empty answer")
     blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", msg, re.S)
     if not blocks:
@@ -290,7 +310,7 @@ async def process(
             continue
         best, cur_png = new, png
         log.info("%s round %d: %d shapes. note: %s", name, rnd, len(best), note[:300])
-    if not best:
+    if best is None:
         return None, cost_sum
     (workdir / f"{fn}_shapes.json").write_text(compact.dump(best))
     return ex.item(f"c-{fn}", name, to_excalidraw(best, name)), cost_sum

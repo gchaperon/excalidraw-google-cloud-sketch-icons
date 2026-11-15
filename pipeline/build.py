@@ -24,9 +24,9 @@ import os
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any
 
 import httpx2
+from pydantic import TypeAdapter, ValidationError
 
 from . import config, convert, redraw
 from . import excalidraw as ex
@@ -44,6 +44,9 @@ log = logging.getLogger("pipeline.build")
 
 type Lock = dict[str, dict[str, dict[str, str]]]
 """sources.lock.json: {library id: {icon name: {"folder": ..., "sha256": ...}}}."""
+
+_LOCK: TypeAdapter[Lock] = TypeAdapter(Lock)
+_LIBRARY: TypeAdapter[ex.LibraryFile] = TypeAdapter(ex.LibraryFile)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -106,6 +109,35 @@ async def previous_release(http: httpx2.AsyncClient, cfg: Config) -> dict[str, b
     names = [LOCK_FILE, *(lib.file for lib in cfg.libraries)]
     files = await asyncio.gather(*(download(http, base + n) for n in names))
     return dict(zip(names, files, strict=True))
+
+
+def read_lock(data: bytes | None) -> Lock:
+    """Validate sources.lock.json from the latest release; no file means no state.
+
+    Raises:
+        SystemExit: If the file is not a valid lock file.
+    """
+    if data is None:
+        return {}
+    try:
+        return _LOCK.validate_json(data, strict=True)
+    except ValidationError as e:
+        raise SystemExit(f"invalid {LOCK_FILE} in the latest release:\n{e}") from None
+
+
+def read_library(data: bytes | None, file_name: str) -> dict[str, ex.LibraryItem]:
+    """Validate a library file from the latest release; return its items by name.
+
+    Raises:
+        SystemExit: If the file is not a valid .excalidrawlib document.
+    """
+    if data is None:
+        return {}
+    try:
+        library = _LIBRARY.validate_json(data, strict=True)
+    except ValidationError as e:
+        raise SystemExit(f"invalid {file_name} in the latest release:\n{e}") from None
+    return {i["name"]: i for i in library["libraryItems"]}
 
 
 async def fetch_icons(http: httpx2.AsyncClient, lib: Library, tmp: Path) -> dict[str, SourceIcon]:
@@ -252,17 +284,13 @@ async def build() -> None:
         async with http_client() as http:
             prev = await previous_release(http, cfg)
             sources = [await fetch_icons(http, lib, Path(tmp)) for lib in cfg.libraries]
-        prev_lock = prev[LOCK_FILE]
-        lock: Lock = json.loads(prev_lock) if prev_lock else {}
+        lock = read_lock(prev[LOCK_FILE])
         if not lock:
             log.info("no previous release state found: every icon counts as new")
 
         for lib, icons in zip(cfg.libraries, sources, strict=True):
             old = lock.get(lib.id, {})
-            prev_lib = prev[lib.file]
-            items: dict[str, Any] = {}
-            if prev_lib:
-                items = {i["name"]: i for i in json.loads(prev_lib)["libraryItems"]}
+            items = read_library(prev[lib.file], lib.file)
             # An icon also counts as added if the lock file has it but the library does not.
             added = sorted(n for n in icons if n not in old or n not in items)
             changed = sorted(
@@ -325,8 +353,8 @@ async def build() -> None:
         (DIST / LOCK_FILE).write_text(json.dumps(lock, indent=1, ensure_ascii=False))
         (DIST / "notes.md").write_text(release_notes(notes, cfg.model, total_cost))
     log.info("changed=%s cost=$%.2f", str(any_change).lower(), total_cost)
-    if os.environ.get("GITHUB_OUTPUT"):
-        with Path(os.environ["GITHUB_OUTPUT"]).open("a") as f:
+    if github_output := os.environ.get("GITHUB_OUTPUT", ""):
+        with Path(github_output).open("a") as f:
             f.write(f"changed={str(any_change).lower()}\n")
 
 
