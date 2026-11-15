@@ -11,6 +11,7 @@ directory; tokens and cost (from OpenRouter usage accounting) go to the DEBUG lo
 Needs `rsvg-convert` (librsvg) and Chrome or Chromium (see render.py).
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -21,7 +22,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-import requests
+import httpx2
 
 from . import excalidraw as ex
 from .compact import Shape, from_excalidraw, to_excalidraw
@@ -29,8 +30,10 @@ from .render import render_icon as render
 
 log = logging.getLogger(__name__)
 
-API_URL = "https://openrouter.ai/api/v1/chat/completions"
+API_URL = "https://openrouter.ai/api/v1"
 APP_TITLE = "excalidraw-google-cloud-sketch-icons"  # shown in the OpenRouter activity log
+ATTEMPTS = 3
+RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 
 STYLE = """You convert Google Cloud product icons into hand-drawn Excalidraw sketch icons.
 
@@ -99,16 +102,38 @@ def png_uri(path: Path) -> str:
     return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
 
 
-def ask(
-    model: str, key: str, text: str, images: Sequence[Path], icon: str
+def client(key: str) -> httpx2.AsyncClient:
+    """Return an HTTP client for the OpenRouter API, authenticated with ``key``.
+
+    The transport tries a failed connection again; ``ask`` handles HTTP errors.
+    """
+    return httpx2.AsyncClient(
+        base_url=API_URL,
+        headers={"Authorization": f"Bearer {key}", "X-Title": APP_TITLE},
+        timeout=httpx2.Timeout(600, connect=30),  # long answers take minutes
+        transport=httpx2.AsyncHTTPTransport(retries=2),
+    )
+
+
+def _retry_delay(response: httpx2.Response | None, attempt: int) -> float:
+    """Seconds to wait before the next attempt; uses Retry-After if the server sends it."""
+    retry_after = response.headers.get("Retry-After", "") if response is not None else ""
+    if retry_after.isdigit():
+        return min(float(retry_after), 60.0)
+    return 5.0 * (attempt + 1)
+
+
+async def ask(
+    http: httpx2.AsyncClient, model: str, text: str, images: Sequence[Path], icon: str
 ) -> tuple[str | None, float]:
     """Send one prompt with images to the model.
 
-    A non-200 answer is tried again, up to 3 attempts in total.
+    Network errors, timeouts, 408, 429 and 5xx answers are tried again, up to
+    ATTEMPTS attempts in total. Other HTTP errors (for example 400 or 401) are not.
 
     Args:
+        http: Client from ``client()``.
         model: OpenRouter model id.
-        key: OpenRouter API key.
         text: The user prompt. The system prompt is always STYLE.
         images: Paths of PNG files, sent after the text in this order.
         icon: Icon name, for the log.
@@ -131,14 +156,21 @@ def ask(
             {"role": "user", "content": content},
         ],
     }
-    headers = {"Authorization": f"Bearer {key}", "X-Title": APP_TITLE}
-    t0 = time.time()
-    for attempt in range(3):
-        r = requests.post(API_URL, timeout=600, headers=headers, json=body)
-        if r.status_code == 200:
-            break
-        log.warning("%s: HTTP %s: %s", icon, r.status_code, r.text[:300])
-        time.sleep(5 * (attempt + 1))
+    t0 = time.monotonic()
+    for attempt in range(ATTEMPTS):
+        r = None
+        try:
+            r = await http.post("/chat/completions", json=body)
+        except httpx2.TransportError as e:
+            log.warning("%s: %s: %s", icon, type(e).__name__, e)
+        else:
+            if r.status_code == 200:
+                break
+            log.warning("%s: HTTP %s: %s", icon, r.status_code, r.text[:300])
+            if r.status_code not in RETRY_STATUS:
+                return None, 0.0
+        if attempt + 1 < ATTEMPTS:
+            await asyncio.sleep(_retry_delay(r, attempt))
     else:
         return None, 0.0
     d = r.json()
@@ -151,7 +183,7 @@ def ask(
     log.debug(
         "%s: %.0fs in=%s out=%s cost=$%.4f",
         icon,
-        time.time() - t0,
+        time.monotonic() - t0,
         u.get("prompt_tokens"),
         u.get("completion_tokens"),
         cost,
@@ -183,10 +215,10 @@ def parse(msg: str | None) -> tuple[list[Shape] | None, str]:
     return shapes, note
 
 
-def process(
+async def process(
+    http: httpx2.AsyncClient,
     model: str,
     rounds: int,
-    key: str,
     workdir: Path,
     name: str,
     svg: Path,
@@ -195,9 +227,9 @@ def process(
     """Run all rounds for one icon.
 
     Args:
+        http: Client from ``client()``.
         model: OpenRouter model id.
         rounds: Number of model calls.
-        key: OpenRouter API key.
         workdir: Output directory for the PNGs and the final shapes JSON.
         name: Display name of the icon.
         svg: Path of the official SVG.
@@ -208,12 +240,13 @@ def process(
     """
     fn = re.sub(r"\W+", "_", name)  # file name stem
     orig = workdir / f"{fn}_orig.png"
-    subprocess.run(
+    await asyncio.to_thread(
+        subprocess.run,
         ["rsvg-convert", "-w", "320", "-h", "320", "-b", "white", "-o", orig, svg],
         check=True,
     )
     b_png = workdir / f"{fn}_b.png"
-    render(b_els, b_png)
+    await asyncio.to_thread(render, b_els, b_png)
     shapes = from_excalidraw(b_els)
     best: list[Shape] | None = None
     cur_png = b_png
@@ -223,7 +256,7 @@ def process(
             text, imgs = ROUND1.format(name=name, shapes=json.dumps(shapes)), [orig, b_png]
         else:
             text, imgs = ROUND2.format(shapes=json.dumps(best)), [orig, cur_png]
-        msg, cost = ask(model, key, text, imgs, name)
+        msg, cost = await ask(http, model, text, imgs, name)
         cost_sum += cost
         new, note = parse(msg)
         if not new:
@@ -231,7 +264,7 @@ def process(
             continue
         best = new
         cur_png = workdir / f"{fn}_r{rnd}.png"
-        render(to_excalidraw(best, name), cur_png)
+        await asyncio.to_thread(render, to_excalidraw(best, name), cur_png)
         log.info("%s round %d: %d shapes. note: %s", name, rnd, len(best), note[:300])
     if not best:
         return None, cost_sum

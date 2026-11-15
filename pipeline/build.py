@@ -15,19 +15,18 @@ In GitHub Actions, writes `changed=true|false` to $GITHUB_OUTPUT.
 """
 
 import argparse
+import asyncio
 import dataclasses
-import functools
 import hashlib
 import json
 import logging
 import os
 import tempfile
-import urllib.error
-import urllib.request
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+import httpx2
 
 from . import config, convert, redraw
 from . import excalidraw as ex
@@ -61,33 +60,41 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def download(url: str, timeout: float = 120) -> bytes | None:
-    """Download a URL.
+def http_client() -> httpx2.AsyncClient:
+    """Return the client for the downloads (GitHub releases and Google's zips).
 
-    Args:
-        url: The URL to get.
-        timeout: Timeout in seconds.
+    Redirects are followed, because GitHub release downloads redirect to a CDN. Failed
+    connections are tried again.
+    """
+    return httpx2.AsyncClient(
+        headers=UA,
+        follow_redirects=True,
+        timeout=httpx2.Timeout(120, connect=30),
+        transport=httpx2.AsyncHTTPTransport(retries=2),
+    )
+
+
+async def download(http: httpx2.AsyncClient, url: str) -> bytes | None:
+    """Download a URL.
 
     Returns:
         The response body, or None if the server answers 404.
 
     Raises:
-        urllib.error.HTTPError: For every HTTP error other than 404.
+        httpx2.HTTPStatusError: For every HTTP error other than 404.
     """
-    request = urllib.request.Request(url, headers=UA)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        raise
+    response = await http.get(url)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.content
 
 
-def previous_release(cfg: Config) -> dict[str, bytes | None]:
-    """Download the files of the latest release.
+async def previous_release(http: httpx2.AsyncClient, cfg: Config) -> dict[str, bytes | None]:
+    """Download the files of the latest release, in parallel.
 
     Args:
+        http: Client from ``http_client()``.
         cfg: The build settings.
 
     Returns:
@@ -96,16 +103,18 @@ def previous_release(cfg: Config) -> dict[str, bytes | None]:
     """
     base = f"https://github.com/{cfg.repo}/releases/latest/download/"
     names = [LOCK_FILE, *(lib.file for lib in cfg.libraries)]
-    return {n: download(base + n) for n in names}
+    files = await asyncio.gather(*(download(http, base + n) for n in names))
+    return dict(zip(names, files, strict=True))
 
 
-def fetch_icons(lib: Library, tmp: Path) -> dict[str, SourceIcon]:
+async def fetch_icons(http: httpx2.AsyncClient, lib: Library, tmp: Path) -> dict[str, SourceIcon]:
     """Download and extract the icon zip of one library.
 
     The zip holds one folder per icon, and each folder holds an ``SVG`` folder with exactly
     one SVG file. Folders that do not match this layout are skipped with a warning.
 
     Args:
+        http: Client from ``http_client()``.
         lib: The library settings.
         tmp: Directory for the zip and its extracted files.
 
@@ -116,7 +125,7 @@ def fetch_icons(lib: Library, tmp: Path) -> dict[str, SourceIcon]:
     Raises:
         SystemExit: If the zip is not found, has an unsafe member path, or has no icons.
     """
-    data = download(lib.zip)
+    data = await download(http, lib.zip)
     if data is None:
         raise SystemExit(f"not found: {lib.zip}")
     zip_path = tmp / f"{lib.id}.zip"
@@ -152,14 +161,20 @@ def fallback_item(name: str, b_elements: list[ex.Element]) -> ex.LibraryItem:
     return ex.item(f"b-{name}", name, [*b_elements, ex.label(name, group)])
 
 
-def process_icon(
-    cfg: Config, key: str, workdir: Path, name: str, svg: Path
+async def process_icon(
+    cfg: Config,
+    model: httpx2.AsyncClient,
+    limit: asyncio.Semaphore,
+    workdir: Path,
+    name: str,
+    svg: Path,
 ) -> tuple[ex.LibraryItem, float, bool]:
     """Build the library item of one icon: approach B, then the model rounds (approach C).
 
     Args:
         cfg: The build settings.
-        key: The OpenRouter API key.
+        model: OpenRouter client from ``redraw.client()``.
+        limit: Limits how many icons are processed at the same time.
         workdir: Directory for the intermediate images.
         name: Display name of the icon.
         svg: Path of the source SVG.
@@ -167,13 +182,16 @@ def process_icon(
     Returns:
         A tuple (item, cost in USD, True if the model failed and the item is the fallback).
     """
-    b_elements = convert.convert(svg.read_text())
-    item: ex.LibraryItem | None
-    try:
-        item, cost = redraw.process(cfg.model, cfg.rounds, key, workdir, name, svg, b_elements)
-    except Exception:  # network or render failure: keep going with approach B
-        log.exception("%s: model step failed", name)
-        item, cost = None, 0.0
+    async with limit:
+        b_elements = await asyncio.to_thread(convert.convert, svg.read_text())  # CPU-bound
+        item: ex.LibraryItem | None
+        try:
+            item, cost = await redraw.process(
+                model, cfg.model, cfg.rounds, workdir, name, svg, b_elements
+            )
+        except Exception:  # network or render failure: keep going with approach B
+            log.exception("%s: model step failed", name)
+            item, cost = None, 0.0
     return (item or fallback_item(name, b_elements)), cost, item is None
 
 
@@ -195,9 +213,7 @@ def setup_logging() -> tuple[logging.Handler, ...]:
     console.setLevel(logging.INFO)
     console.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
     logfile = logging.FileHandler(WORK / "log.txt")
-    logfile.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(threadName)s: %(message)s")
-    )
+    logfile.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logger = logging.getLogger("pipeline")
     logger.setLevel(logging.DEBUG)
     for h in (console, logfile):
@@ -209,7 +225,7 @@ def main() -> None:
     """Run the build. See the module docstring for the command line."""
     handlers = setup_logging()
     try:
-        build()
+        asyncio.run(build())
     finally:
         logger = logging.getLogger("pipeline")
         for h in handlers:
@@ -217,7 +233,7 @@ def main() -> None:
             h.close()
 
 
-def build() -> None:
+async def build() -> None:
     """Parse the command line and run the build."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     g = ap.add_mutually_exclusive_group()
@@ -225,18 +241,20 @@ def build() -> None:
     g.add_argument("--force", action="store_true", help="reprocess every icon")
     a = ap.parse_args()
     cfg = config.load()
-    prev = previous_release(cfg)
-    prev_lock = prev[LOCK_FILE]
-    lock: Lock = json.loads(prev_lock) if prev_lock else {}
-    if not lock:
-        log.info("no previous release state found: every icon counts as new")
     notes: list[str] = []
     outputs: dict[str, ex.LibraryFile] = {}
     any_change, total_cost = False, 0.0
 
     with tempfile.TemporaryDirectory() as tmp:
-        for lib in cfg.libraries:
-            icons = fetch_icons(lib, Path(tmp))
+        async with http_client() as http:
+            prev = await previous_release(http, cfg)
+            sources = [await fetch_icons(http, lib, Path(tmp)) for lib in cfg.libraries]
+        prev_lock = prev[LOCK_FILE]
+        lock: Lock = json.loads(prev_lock) if prev_lock else {}
+        if not lock:
+            log.info("no previous release state found: every icon counts as new")
+
+        for lib, icons in zip(cfg.libraries, sources, strict=True):
             old = lock.get(lib.id, {})
             prev_lib = prev[lib.file]
             items: dict[str, Any] = {}
@@ -267,12 +285,12 @@ def build() -> None:
             if todo:
                 workdir = WORK / lib.id
                 workdir.mkdir(parents=True, exist_ok=True)
-                key = redraw.key()
-                run = functools.partial(process_icon, cfg, key, workdir)
-                with ThreadPoolExecutor(cfg.workers, thread_name_prefix="icon") as pool:
-                    svgs = [icons[n].svg for n in todo]
-                    results = dict(zip(todo, pool.map(run, todo, svgs), strict=True))
-                for n, (item, cost, failed) in results.items():
+                limit = asyncio.Semaphore(cfg.workers)
+                async with redraw.client(redraw.key()) as model:
+                    done = await asyncio.gather(
+                        *(process_icon(cfg, model, limit, workdir, n, icons[n].svg) for n in todo)
+                    )
+                for n, (item, cost, failed) in zip(todo, done, strict=True):
                     items[n] = item
                     total_cost += cost
                     if failed:

@@ -1,11 +1,12 @@
 import json
 import types
 
+import httpx2
 import pytest
 
 from pipeline import redraw
 
-from .conftest import DATA, needs_rsvg
+from .conftest import DATA, mock_client, needs_rsvg
 
 SHAPES = [{"t": "ellipse", "c": "#4285f4", "x": 10, "y": 10, "w": 50, "h": 50}]
 
@@ -59,41 +60,45 @@ def test_key_missing_exits(monkeypatch, value):
 # --- ask -----------------------------------------------------------------------------------
 
 
-class FakeResponse:
-    def __init__(self, status_code, body):
-        self.status_code, self._body, self.text = status_code, body, json.dumps(body)
-
-    def json(self):
-        return self._body
-
-
 @pytest.fixture
-def post(monkeypatch, tmp_path):
-    """Replace requests.post with a queue of responses; record the requests."""
-    responses, requests = [], []
+def model(monkeypatch, tmp_path):
+    """An OpenRouter client that answers from a queue; it records the request bodies.
 
-    def fake_post(url, **kwargs):
-        requests.append(kwargs["json"])
-        return responses.pop(0)
+    A queue entry is a Response, or an exception to raise (a network error).
+    """
+    responses, bodies = [], []
 
-    monkeypatch.setattr(redraw.requests, "post", fake_post)
-    monkeypatch.setattr(redraw.time, "sleep", lambda s: None)
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        answer = responses.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(redraw, "_retry_delay", lambda response, attempt: 0)
     image = tmp_path / "a.png"
     image.write_bytes(b"png")
-    return types.SimpleNamespace(responses=responses, requests=requests, image=image)
-
-
-def ok(content, cost=0.25):
-    return FakeResponse(
-        200, {"choices": [{"message": {"content": content}}], "usage": {"cost": cost}}
+    return types.SimpleNamespace(
+        http=mock_client(handler, base_url=redraw.API_URL),
+        responses=responses,
+        bodies=bodies,
+        image=image,
     )
 
 
-def test_ask_sends_text_then_images_and_returns_cost(post):
-    post.responses.append(ok("hello"))
+def ok(content, cost=0.25):
+    body = {"choices": [{"message": {"content": content}}], "usage": {"cost": cost}}
+    return httpx2.Response(200, json=body)
 
-    assert redraw.ask("some/model", "k", "prompt", [post.image], "X") == ("hello", 0.25)
-    (body,) = post.requests
+
+@pytest.mark.anyio
+async def test_ask_sends_text_then_images_and_returns_cost(model):
+    model.responses.append(ok("hello"))
+
+    answer = await redraw.ask(model.http, "some/model", "prompt", [model.image], "X")
+
+    assert answer == ("hello", 0.25)
+    (body,) = model.bodies
     assert body["model"] == "some/model"
     assert body["messages"][0] == {"role": "system", "content": redraw.STYLE}
     user = body["messages"][1]["content"]
@@ -101,24 +106,48 @@ def test_ask_sends_text_then_images_and_returns_cost(post):
     assert user[1]["image_url"]["url"] == "data:image/png;base64,cG5n"
 
 
-def test_ask_retries_errors(post, caplog):
-    post.responses += [FakeResponse(429, {}), FakeResponse(500, {}), ok("hello")]
+@pytest.mark.anyio
+async def test_ask_retries_server_and_network_errors(model, caplog):
+    model.responses += [httpx2.Response(429), httpx2.ConnectError("down"), ok("hello")]
 
-    assert redraw.ask("m", "k", "prompt", [], "X") == ("hello", 0.25)
+    assert await redraw.ask(model.http, "m", "prompt", [], "X") == ("hello", 0.25)
     assert "X: HTTP 429" in caplog.text
-    assert "X: HTTP 500" in caplog.text
+    assert "X: ConnectError: down" in caplog.text
 
 
-def test_ask_gives_up_after_three_attempts(post):
-    post.responses += [FakeResponse(500, {})] * 3
+@pytest.mark.anyio
+async def test_ask_gives_up_after_three_attempts(model):
+    model.responses += [httpx2.Response(500)] * 3
 
-    assert redraw.ask("m", "k", "prompt", [], "X") == (None, 0.0)
+    assert await redraw.ask(model.http, "m", "prompt", [], "X") == (None, 0.0)
 
 
-def test_ask_without_choices(post):
-    post.responses.append(FakeResponse(200, {"error": "x"}))
+@pytest.mark.anyio
+async def test_ask_does_not_retry_client_errors(model):
+    model.responses += [httpx2.Response(401), ok("never sent")]
 
-    assert redraw.ask("m", "k", "prompt", [], "X") == (None, 0.0)
+    assert await redraw.ask(model.http, "m", "prompt", [], "X") == (None, 0.0)
+    assert len(model.bodies) == 1
+
+
+@pytest.mark.anyio
+async def test_ask_without_choices(model):
+    model.responses.append(httpx2.Response(200, json={"error": "x"}))
+
+    assert await redraw.ask(model.http, "m", "prompt", [], "X") == (None, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("headers", "attempt", "delay"),
+    [
+        ({}, 0, 5.0),
+        ({}, 1, 10.0),
+        ({"Retry-After": "7"}, 0, 7.0),
+        ({"Retry-After": "600"}, 0, 60.0),
+    ],
+)
+def test_retry_delay(headers, attempt, delay):
+    assert redraw._retry_delay(httpx2.Response(429, headers=headers), attempt) == delay
 
 
 # --- process -------------------------------------------------------------------------------
@@ -129,7 +158,7 @@ def fake_model(monkeypatch):
     """Replace the model and the Chrome renderer. Answers are taken from a queue."""
     answers, calls, renders = [], [], []
 
-    def fake_ask(model, key, text, images, icon):
+    async def fake_ask(http, model, text, images, icon):
         calls.append((text, [p.name for p in images]))
         return answers.pop(0), 0.5
 
@@ -157,10 +186,13 @@ B_ELEMENTS = [
 
 
 @needs_rsvg
-def test_process_keeps_the_last_valid_answer(fake_model, tmp_path, caplog):
+@pytest.mark.anyio
+async def test_process_keeps_the_last_valid_answer(fake_model, tmp_path, caplog):
     better = [{**SHAPES[0], "x": 20}]
     fake_model.answers += [answer(SHAPES), "garbage", answer(better)]
-    item, cost = redraw.process("m", 3, "k", tmp_path, "Big Query", DATA / "blobs.svg", B_ELEMENTS)
+    item, cost = await redraw.process(
+        httpx2.AsyncClient(), "m", 3, tmp_path, "Big Query", DATA / "blobs.svg", B_ELEMENTS
+    )
 
     assert cost == 1.5
     assert item is not None
@@ -181,17 +213,23 @@ def test_process_keeps_the_last_valid_answer(fake_model, tmp_path, caplog):
 
 
 @needs_rsvg
-def test_process_without_any_valid_answer(fake_model, tmp_path):
+@pytest.mark.anyio
+async def test_process_without_any_valid_answer(fake_model, tmp_path):
     fake_model.answers += ["garbage", "garbage"]
-    item, cost = redraw.process("m", 2, "k", tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS)
+    item, cost = await redraw.process(
+        httpx2.AsyncClient(), "m", 2, tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS
+    )
 
     assert (item, cost) == (None, 1.0)
 
 
 @needs_rsvg
-def test_process_repeats_the_first_prompt_until_an_answer_is_valid(fake_model, tmp_path):
+@pytest.mark.anyio
+async def test_process_repeats_the_first_prompt_until_an_answer_is_valid(fake_model, tmp_path):
     fake_model.answers += [None, "garbage", answer(SHAPES)]
-    item, cost = redraw.process("m", 3, "k", tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS)
+    item, cost = await redraw.process(
+        httpx2.AsyncClient(), "m", 3, tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS
+    )
 
     assert cost == 1.5
     assert item is not None
