@@ -10,6 +10,7 @@ download is not needed.
 """
 
 import json
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -18,9 +19,13 @@ from typing import Any, Self
 
 from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
 from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 CHROME = os.environ.get("CHROME_BIN", "chromium")
-TIMEOUT_MS = 90_000  # per render; the first one downloads Excalidraw
+TIMEOUT_MS = 30_000  # per attempt; a render takes about 1 s, the first one a few more
+ATTEMPTS = 2
+
+log = logging.getLogger(__name__)
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8><style>
 html,body{margin:0;background:#fff}#c svg{width:%dpx;height:%dpx;display:block}</style></head>
@@ -40,6 +45,10 @@ try {
 
 class RenderError(Exception):
     """The page did not finish drawing: a JavaScript error or a timeout."""
+
+
+class _RenderTimeoutError(RenderError):
+    """One attempt did not finish in time."""
 
 
 class Renderer:
@@ -84,18 +93,37 @@ class Renderer:
     async def render(self, elements: list[dict[str, Any]], out_png: Path, size: int = 320) -> None:
         """Render elements to a size x size PNG, scaled to fit, on a white background.
 
+        A render that does not finish in time is tried again once, in a new page: such a
+        stall is usually a network or browser problem, not a problem of the drawing.
+
         Raises:
-            RenderError: If the page has a JavaScript error or does not finish in time.
+            RenderError: If the page has a JavaScript error, or does not finish in time
+                in ATTEMPTS attempts.
         """
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                await self._render_once(elements, out_png, size)
+                return
+            except _RenderTimeoutError as e:
+                if attempt == ATTEMPTS:
+                    raise RenderError(f"{e} ({ATTEMPTS} attempts)") from e
+                log.warning("%s; trying again", e)
+
+    async def _render_once(self, elements: list[dict[str, Any]], out_png: Path, size: int) -> None:
         if self._context is None:
             raise RuntimeError("use the Renderer with `async with`")
         page = await self._context.new_page()
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("requestfailed", lambda r: errors.append(f"request failed: {r.url} {r.failure}"))
         try:
             await page.set_viewport_size({"width": size, "height": size})
             await page.set_content(PAGE % (size, size, json.dumps(elements)))
-            await page.wait_for_function("document.title !== ''", timeout=TIMEOUT_MS)
+            try:
+                await page.wait_for_function("document.title !== ''", timeout=TIMEOUT_MS)
+            except PlaywrightTimeoutError as e:
+                detail = "; ".join(errors) or f"not finished after {TIMEOUT_MS / 1000:.0f} s"
+                raise _RenderTimeoutError(f"{out_png.name}: {detail}") from e
             if (title := await page.title()) != "done":
                 raise RenderError(f"{out_png.name}: {title}")
             await page.screenshot(

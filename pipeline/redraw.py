@@ -3,7 +3,8 @@
 Each icon goes through ``rounds`` model calls:
   first prompt: the official icon (PNG), the approach B rendering (PNG) and its shapes
   next prompts: the official icon, the rendering of the last valid answer and its shapes
-The first prompt is sent again until an answer is valid.
+The first prompt is sent again until an answer is valid. An answer is valid if it parses
+and Excalidraw can draw it.
 The model answers with compact shapes (see compact.py). The last answer that parses is
 kept. The model is called through OpenRouter. The per-round PNGs are written to the build
 directory; tokens and cost (from OpenRouter usage accounting) go to the DEBUG log.
@@ -26,7 +27,7 @@ import httpx2
 
 from . import excalidraw as ex
 from .compact import Shape, from_excalidraw, to_excalidraw
-from .render import Renderer
+from .render import Renderer, RenderError
 
 log = logging.getLogger(__name__)
 
@@ -260,13 +261,18 @@ async def process(
             text, imgs = ROUND2.format(shapes=json.dumps(best)), [orig, cur_png]
         msg, cost = await ask(http, model, text, imgs, name)
         cost_sum += cost
+        log.debug("%s round %d answer: %s", name, rnd, msg)
         new, note = parse(msg)
         if not new:
             log.warning("%s round %d: could not parse answer: %r", name, rnd, (msg or "")[:300])
             continue
-        best = new
-        cur_png = workdir / f"{fn}_r{rnd}.png"
-        await renderer.render_icon(to_excalidraw(best, name), cur_png)
+        png = workdir / f"{fn}_r{rnd}.png"
+        try:
+            await renderer.render_icon(to_excalidraw(new, name), png)
+        except RenderError as e:  # never publish a drawing that Excalidraw cannot draw
+            log.warning("%s round %d: answer dropped, render failed: %s", name, rnd, e)
+            continue
+        best, cur_png = new, png
         log.info("%s round %d: %d shapes. note: %s", name, rnd, len(best), note[:300])
     if not best:
         return None, cost_sum

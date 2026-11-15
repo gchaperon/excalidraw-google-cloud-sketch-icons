@@ -5,6 +5,7 @@ import pytest
 from PIL import Image
 
 from pipeline import excalidraw as ex
+from pipeline import render
 from pipeline.render import Renderer, RenderError, _framed
 
 from .conftest import needs_chrome
@@ -58,3 +59,16 @@ async def test_render_draws_the_icon(tmp_path):
     assert (image[5, 5] == 255).all()  # white background
     assert ((image[..., 0] > 200) & (image[..., 1] < 120)).any()  # the red circle is drawn
     assert (tmp_path / "b.png").read_bytes() == (tmp_path / "a.png").read_bytes()
+
+
+@needs_chrome
+@pytest.mark.anyio
+async def test_a_stalled_page_is_tried_again_then_reported(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(render, "PAGE", "<html><!-- %d %d %s: never sets the title --></html>")
+    monkeypatch.setattr(render, "TIMEOUT_MS", 300)
+
+    async with Renderer() as r:
+        with pytest.raises(RenderError, match=r"x\.png: not finished after 0 s \(2 attempts\)"):
+            await r.render([], tmp_path / "x.png")
+
+    assert "x.png: not finished after 0 s; trying again" in caplog.text
