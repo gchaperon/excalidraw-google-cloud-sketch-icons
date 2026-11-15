@@ -7,7 +7,7 @@ import httpx2
 import pytest
 from syrupy.extensions.json import JSONSnapshotExtension
 
-from pipeline.render import CHROME, Renderer
+from pipeline.render import CHROME, Renderer, RenderError
 
 DATA = Path(__file__).parent / "data"
 
@@ -25,9 +25,10 @@ class FakeRenderer(Renderer):
     ``render_icon`` is inherited, so the framing code still runs.
     """
 
-    def __init__(self):
+    def __init__(self, fail=()):
         super().__init__()
         self.calls = []
+        self.fail = set(fail)  # PNG names whose render fails
 
     async def __aenter__(self):
         return self
@@ -37,6 +38,8 @@ class FakeRenderer(Renderer):
 
     async def render(self, elements, out_png, size=320):
         self.calls.append((out_png.name, elements))
+        if out_png.name in self.fail:
+            raise RenderError(f"{out_png.name}: fake failure")
         out_png.write_bytes(b"png")
 
 

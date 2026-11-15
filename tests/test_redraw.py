@@ -259,3 +259,35 @@ async def test_process_repeats_the_first_prompt_until_an_answer_is_valid(fake_mo
     assert item["elements"][0]["x"] == 10
     assert [images for _, images in fake_model.calls] == [["X_orig.png", "X_b.png"]] * 3
     assert all("Icon: X" in text for text, _ in fake_model.calls)
+
+
+@needs_rsvg
+@pytest.mark.anyio
+async def test_process_drops_answers_that_do_not_render(fake_model, tmp_path, caplog):
+    second, third = [{**SHAPES[0], "x": 20}], [{**SHAPES[0], "x": 30}]
+    fake_model.answers += [answer(SHAPES), answer(second), answer(third)]
+    renderer = FakeRenderer(fail={"X_r2.png"})
+
+    item, cost = await redraw.process(
+        httpx2.AsyncClient(), renderer, "m", 3, tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS
+    )
+
+    assert cost == 1.5  # the cost of every round is counted
+    assert item is not None
+    assert item["elements"][0]["x"] == 30
+    # Round 3 continues from the last answer that rendered (round 1).
+    assert [images for _, images in fake_model.calls][2] == ["X_orig.png", "X_r1.png"]
+    assert "X round 2: answer dropped, render failed: X_r2.png: fake failure" in caplog.text
+
+
+@needs_rsvg
+@pytest.mark.anyio
+async def test_process_logs_every_answer(fake_model, tmp_path, caplog):
+    caplog.set_level("DEBUG", logger="pipeline")
+    fake_model.answers += ["garbage"]
+
+    await redraw.process(
+        httpx2.AsyncClient(), FakeRenderer(), "m", 1, tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS
+    )
+
+    assert "X round 1 answer: garbage" in caplog.text
