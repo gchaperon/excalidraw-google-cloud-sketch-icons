@@ -50,13 +50,21 @@ Generated files are never committed to this repository. Releases are the only pl
 
 ### Running the pipeline locally
 
-Requirements: [uv](https://docs.astral.sh/uv/), `rsvg-convert` (librsvg), Chromium or Chrome (set `CHROME_BIN` if it is not called `chromium`), and an OpenRouter API key in `OPENROUTER_API_KEY` or in a `.env` file.
+Requirements: [uv](https://docs.astral.sh/uv/), `rsvg-convert` (librsvg), Chromium or Chrome (set `CHROME_BIN` if it is not called `chromium`), and an OpenRouter API key in the `OPENROUTER_API_KEY` environment variable.
 
 ```sh
 uv run python -m pipeline.build --check   # report changed icons, no model calls
 uv run python -m pipeline.build           # rebuild new/changed icons only
 uv run python -m pipeline.build --force   # rebuild every icon
 ```
+
+To keep the key in a git-ignored `.env` file (`OPENROUTER_API_KEY=...`), let uv load it:
+
+```sh
+uv run --env-file .env python -m pipeline.build
+```
+
+To load it for every `uv run` in your shell, set `export UV_ENV_FILE=.env`. A variable that is already set in the shell has priority over the file. uv stops with an error if the file does not exist. `--check` does not need the key.
 
 The previous state is downloaded from the latest release. Outputs are written to `dist/` (libraries, `sources.lock.json`, release notes) and intermediate images and logs to `build/`. Both folders are git-ignored.
 

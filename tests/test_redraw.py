@@ -40,28 +40,19 @@ def test_parse_rejects_invalid_answers(msg):
 # --- key -----------------------------------------------------------------------------------
 
 
-@pytest.fixture
-def env_file(tmp_path, monkeypatch):
-    path = tmp_path / ".env"
-    monkeypatch.setattr(redraw, "ENV", path)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    return path
-
-
-def test_key_prefers_the_environment(env_file, monkeypatch):
-    env_file.write_text("OPENROUTER_API_KEY=from-file\n")
+def test_key_reads_the_environment(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "from-env")
 
     assert redraw.key() == "from-env"
 
 
-def test_key_falls_back_to_dotenv(env_file):
-    env_file.write_text("OTHER=1\nOPENROUTER_API_KEY= from-file \n")
+@pytest.mark.parametrize("value", [None, ""])
+def test_key_missing_exits(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("OPENROUTER_API_KEY", value)
 
-    assert redraw.key() == "from-file"
-
-
-def test_key_missing_exits(env_file):
     with pytest.raises(SystemExit, match="OPENROUTER_API_KEY"):
         redraw.key()
 
