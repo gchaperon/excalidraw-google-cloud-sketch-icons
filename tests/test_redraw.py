@@ -1,4 +1,3 @@
-import io
 import json
 import types
 
@@ -93,7 +92,7 @@ def ok(content, cost=0.25):
 def test_ask_sends_text_then_images_and_returns_cost(post):
     post.responses.append(ok("hello"))
 
-    assert redraw.ask("some/model", "k", "prompt", [post.image], io.StringIO()) == ("hello", 0.25)
+    assert redraw.ask("some/model", "k", "prompt", [post.image], "X") == ("hello", 0.25)
     (body,) = post.requests
     assert body["model"] == "some/model"
     assert body["messages"][0] == {"role": "system", "content": redraw.STYLE}
@@ -102,25 +101,24 @@ def test_ask_sends_text_then_images_and_returns_cost(post):
     assert user[1]["image_url"]["url"] == "data:image/png;base64,cG5n"
 
 
-def test_ask_retries_errors(post):
+def test_ask_retries_errors(post, caplog):
     post.responses += [FakeResponse(429, {}), FakeResponse(500, {}), ok("hello")]
-    log = io.StringIO()
 
-    assert redraw.ask("m", "k", "prompt", [], log) == ("hello", 0.25)
-    assert "HTTP 429" in log.getvalue()
-    assert "HTTP 500" in log.getvalue()
+    assert redraw.ask("m", "k", "prompt", [], "X") == ("hello", 0.25)
+    assert "X: HTTP 429" in caplog.text
+    assert "X: HTTP 500" in caplog.text
 
 
 def test_ask_gives_up_after_three_attempts(post):
     post.responses += [FakeResponse(500, {})] * 3
 
-    assert redraw.ask("m", "k", "prompt", [], io.StringIO()) == (None, 0.0)
+    assert redraw.ask("m", "k", "prompt", [], "X") == (None, 0.0)
 
 
 def test_ask_without_choices(post):
     post.responses.append(FakeResponse(200, {"error": "x"}))
 
-    assert redraw.ask("m", "k", "prompt", [], io.StringIO()) == (None, 0.0)
+    assert redraw.ask("m", "k", "prompt", [], "X") == (None, 0.0)
 
 
 # --- process -------------------------------------------------------------------------------
@@ -131,9 +129,8 @@ def fake_model(monkeypatch):
     """Replace the model and the Chrome renderer. Answers are taken from a queue."""
     answers, calls, renders = [], [], []
 
-    def fake_ask(model, k, text, images, log):
+    def fake_ask(model, key, text, images, icon):
         calls.append((text, [p.name for p in images]))
-        log.write("  (fake call)\n")
         return answers.pop(0), 0.5
 
     def fake_render(elements, out_png):
@@ -160,15 +157,10 @@ B_ELEMENTS = [
 
 
 @needs_rsvg
-def test_process_keeps_the_last_valid_answer(fake_model, tmp_path):
+def test_process_keeps_the_last_valid_answer(fake_model, tmp_path, caplog):
     better = [{**SHAPES[0], "x": 20}]
     fake_model.answers += [answer(SHAPES), "garbage", answer(better)]
-    log = io.StringIO()
-    opts = types.SimpleNamespace(model="m", rounds=3)
-
-    item, cost = redraw.process(
-        opts, "k", tmp_path, "Big Query", DATA / "blobs.svg", B_ELEMENTS, log
-    )
+    item, cost = redraw.process("m", 3, "k", tmp_path, "Big Query", DATA / "blobs.svg", B_ELEMENTS)
 
     assert cost == 1.5
     assert item["id"] == "c-Big_Query"
@@ -184,17 +176,13 @@ def test_process_keeps_the_last_valid_answer(fake_model, tmp_path):
     ]
     assert "Icon: Big Query" in fake_model.calls[0][0]
     assert '"x": 1.0' in fake_model.calls[0][0]  # approach B shapes are in the prompt
-    assert "could not parse answer" in log.getvalue()
+    assert "Big Query round 2: could not parse answer" in caplog.text
 
 
 @needs_rsvg
 def test_process_without_any_valid_answer(fake_model, tmp_path):
     fake_model.answers += ["garbage", "garbage"]
-    opts = types.SimpleNamespace(model="m", rounds=2)
-
-    item, cost = redraw.process(
-        opts, "k", tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS, io.StringIO()
-    )
+    item, cost = redraw.process("m", 2, "k", tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS)
 
     assert (item, cost) == (None, 1.0)
 
@@ -202,11 +190,7 @@ def test_process_without_any_valid_answer(fake_model, tmp_path):
 @needs_rsvg
 def test_process_repeats_the_first_prompt_until_an_answer_is_valid(fake_model, tmp_path):
     fake_model.answers += [None, "garbage", answer(SHAPES)]
-    opts = types.SimpleNamespace(model="m", rounds=3)
-
-    item, cost = redraw.process(
-        opts, "k", tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS, io.StringIO()
-    )
+    item, cost = redraw.process("m", 3, "k", tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS)
 
     assert cost == 1.5
     assert item["elements"][0]["x"] == 10

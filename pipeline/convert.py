@@ -19,12 +19,9 @@ Needs `rsvg-convert` (librsvg) on PATH.
 """
 
 import math
-import random
 import re
 import subprocess
-import tempfile
-import time
-from pathlib import Path
+from io import BytesIO
 
 import numpy as np
 from PIL import Image
@@ -32,11 +29,10 @@ from scipy import ndimage
 from skimage.measure import approximate_polygon, find_contours, label, regionprops
 from skimage.morphology import skeletonize
 
+from . import excalidraw as ex
+
 RES = 512  # raster resolution (icons are 512 viewBox)
-ICON = 120  # output icon size in Excalidraw px
-SCALE = ICON / RES  # raster px -> Excalidraw px
-STROKE = 6  # Excalidraw stroke width
-ROUGH = 1  # Excalidraw roughness (0 architect, 1 artist, 2 cartoonist)
+SCALE = ex.ICON / RES  # raster px -> Excalidraw px
 SPUR = 34  # px at RES: drop skeleton branches shorter than this
 TOL = 4.0  # px at RES: RDP tolerance
 CORNER = 50  # degrees: split polylines at turns sharper than this
@@ -50,11 +46,13 @@ def rasterize(svg_text):
     Returns:
         An RGBA uint8 array of shape (RES, RES, 4).
     """
-    with tempfile.TemporaryDirectory() as d:
-        src, out = Path(d) / "a.svg", Path(d) / "a.png"
-        src.write_text(svg_text)
-        subprocess.run(["rsvg-convert", "-w", str(RES), "-h", str(RES), "-o", out, src], check=True)
-        return np.array(Image.open(out).convert("RGBA"))
+    png = subprocess.run(
+        ["rsvg-convert", "-w", str(RES), "-h", str(RES)],
+        input=svg_text.encode(),
+        capture_output=True,
+        check=True,
+    ).stdout
+    return np.array(Image.open(BytesIO(png)).convert("RGBA"))
 
 
 def shapes(svg):
@@ -226,73 +224,9 @@ def fit_circle(pts):
     return ca, cb, r, err
 
 
-_ids = 0  # element counter, makes the ids unique and readable
-
-
-def base(kind, x, y, w, h, color, group, **kw):
-    """Return an Excalidraw element of type ``kind``, with ``kw`` overriding the defaults."""
-    global _ids
-    _ids += 1
-    e = {
-        "id": f"b{_ids}-{random.randrange(1 << 30):x}",
-        "type": kind,
-        "x": x,
-        "y": y,
-        "width": w,
-        "height": h,
-        "angle": 0,
-        "strokeColor": color,
-        "backgroundColor": "transparent",
-        "fillStyle": "solid",
-        "strokeWidth": STROKE,
-        "strokeStyle": "solid",
-        "roughness": ROUGH,
-        "opacity": 100,
-        "groupIds": [group],
-        "frameId": None,
-        "roundness": None,
-        "seed": random.randrange(1 << 31),
-        "version": 1,
-        "versionNonce": random.randrange(1 << 31),
-        "isDeleted": False,
-        "boundElements": None,
-        "updated": int(time.time() * 1000),
-        "link": None,
-        "locked": False,
-    }
-    e.update(kw)
-    return e
-
-
-def line_el(pts, color, group, curved, closed=False, fill=None):
-    """Return an Excalidraw line through raster points ``pts`` = [(y, x), ...].
-
-    Args:
-        pts: Points in raster px, (y, x) order.
-        color: Stroke color.
-        group: Excalidraw group id.
-        curved: If True, Excalidraw draws a smooth curve through the points.
-        closed: If True, the line ends at its first point.
-        fill: If set, the color of a hachure fill.
-    """
-    xy = [(p[1] * SCALE, p[0] * SCALE) for p in pts]  # (y,x) -> (x,y)
-    if closed and xy[0] != xy[-1]:
-        xy.append(xy[0])
-    x0, y0 = xy[0]
-    rel = [[px - x0, py - y0] for px, py in xy]
-    xs, ys = [p[0] for p in rel], [p[1] for p in rel]
-    kw = {
-        "points": rel,
-        "lastCommittedPoint": None,
-        "startBinding": None,
-        "endBinding": None,
-        "startArrowhead": None,
-        "endArrowhead": None,
-        "roundness": {"type": 2} if curved else None,
-    }
-    if fill:
-        kw.update(backgroundColor=fill, fillStyle="hachure")
-    return base("line", x0, y0, max(xs) - min(xs), max(ys) - min(ys), color, group, **kw)
+def to_xy(pts):
+    """Convert raster points [(y, x), ...] to Excalidraw points [(x, y), ...]."""
+    return [(p[1] * SCALE, p[0] * SCALE) for p in pts]
 
 
 def color_of(im):
@@ -340,7 +274,7 @@ def convert(svg_text):
     Returns:
         The elements, all in one group, without a label.
     """
-    group = f"g-{random.randrange(1 << 30):x}"
+    group = ex.new_group()
     els = []
     for shape_svg in shapes(svg_text):
         im = rasterize(shape_svg)
@@ -358,7 +292,7 @@ def convert(svg_text):
             if reg.area < 2600 and reg.solidity > 0.85 and reg.eccentricity < 0.8:
                 # small dot: solid filled ellipse
                 els.append(
-                    base(
+                    ex.element(
                         "ellipse",
                         *box,
                         color,
@@ -372,7 +306,7 @@ def convert(svg_text):
             if half > 28:  # solid blob, not a stroke
                 if reg.eccentricity < 0.5 and reg.solidity > 0.9:
                     els.append(
-                        base(
+                        ex.element(
                             "ellipse",
                             *box,
                             color,
@@ -384,7 +318,17 @@ def convert(svg_text):
                 else:
                     outline = max(find_contours(m.astype(float), 0.5), key=len)
                     outline = approximate_polygon(outline, TOL)
-                    els.append(line_el(outline, color, group, False, closed=True, fill=color))
+                    els.append(
+                        ex.line(
+                            to_xy(outline),
+                            color,
+                            group,
+                            False,
+                            closed=True,
+                            backgroundColor=color,
+                            fillStyle="hachure",
+                        )
+                    )
                 continue
             lines, deg = trace(skeletonize(m))
             for line in prune(lines, deg):
@@ -396,7 +340,9 @@ def convert(svg_text):
                     if err < 3:  # a circle: draw it as an ellipse
                         d = 2 * r * SCALE
                         els.append(
-                            base("ellipse", (cx - r) * SCALE, (cy - r) * SCALE, d, d, color, group)
+                            ex.element(
+                                "ellipse", (cx - r) * SCALE, (cy - r) * SCALE, d, d, color, group
+                            )
                         )
                         continue
                 simplified = approximate_polygon(np.array(line, float), TOL)
@@ -406,5 +352,5 @@ def convert(svg_text):
                     curved = len(part) > 2
                     if curved:  # resample curved part more finely for smooth roundness
                         part = [tuple(p) for p in approximate_polygon(np.array(part), TOL / 2)]
-                    els.append(line_el(part, color, group, curved))
+                    els.append(ex.line(to_xy(part), color, group, curved))
     return els

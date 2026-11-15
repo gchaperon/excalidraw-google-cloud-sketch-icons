@@ -65,7 +65,7 @@ def library(*items):
 # --- fetch_icons ---------------------------------------------------------------------------
 
 
-def test_fetch_icons_reads_one_svg_per_folder(monkeypatch, tmp_path, capsys):
+def test_fetch_icons_reads_one_svg_per_folder(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(build, "download", lambda url: icons_zip())
 
     icons = build.fetch_icons(CONFIG["libraries"][0], tmp_path)
@@ -73,7 +73,7 @@ def test_fetch_icons_reads_one_svg_per_folder(monkeypatch, tmp_path, capsys):
     assert sorted(icons) == ["A", "B", "Nice Name"]
     assert icons["Nice Name"]["folder"] == "Folder C"
     assert icons["A"]["sha256"] == sha(SVGS["A"])
-    assert "Two SVGs: expected 1 SVG, found 2; skipped" in capsys.readouterr().err
+    assert "lib/Two SVGs: expected 1 SVG, found 2; skipped" in caplog.text
 
 
 @pytest.mark.parametrize("member", ["../evil.svg", "Icons/../../evil.svg", "/abs/evil.svg"])
@@ -108,7 +108,7 @@ def run(monkeypatch, tmp_path):
     monkeypatch.setattr(build.convert, "convert", lambda svg: [{"type": "line", "groupIds": ["g"]}])
     processed = []
 
-    def fake_process(args, key, workdir, name, svg, b_elements, log):
+    def fake_process(model, rounds, key, workdir, name, svg, b_elements):
         processed.append(name)
         if name == "B":
             raise ConnectionError("model down")
