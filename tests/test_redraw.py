@@ -188,12 +188,6 @@ def test_process_keeps_the_last_valid_answer(fake_model, tmp_path):
 
 
 @needs_rsvg
-@pytest.mark.xfail(
-    strict=True,
-    raises=AttributeError,
-    reason="known bug: after an invalid round 1 answer, round 2 has no shapes and no image "
-    "(cur_png is None), so the real ask() fails and the icon falls back to approach B",
-)
 def test_process_without_any_valid_answer(fake_model, tmp_path):
     fake_model.answers += ["garbage", "garbage"]
     opts = types.SimpleNamespace(model="m", rounds=2)
@@ -203,3 +197,18 @@ def test_process_without_any_valid_answer(fake_model, tmp_path):
     )
 
     assert (item, cost) == (None, 1.0)
+
+
+@needs_rsvg
+def test_process_repeats_the_first_prompt_until_an_answer_is_valid(fake_model, tmp_path):
+    fake_model.answers += [None, "garbage", answer(SHAPES)]
+    opts = types.SimpleNamespace(model="m", rounds=3)
+
+    item, cost = redraw.process(
+        opts, "k", tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS, io.StringIO()
+    )
+
+    assert cost == 1.5
+    assert item["elements"][0]["x"] == 10
+    assert [images for _, images in fake_model.calls] == [["X_orig.png", "X_b.png"]] * 3
+    assert all("Icon: X" in text for text, _ in fake_model.calls)
