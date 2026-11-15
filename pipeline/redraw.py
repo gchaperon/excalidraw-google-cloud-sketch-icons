@@ -1,8 +1,9 @@
 """Approach C: LLM redraws each icon in sketch style, starting from approach B.
 
 Each icon goes through ``rounds`` model calls:
-  round 1: the official icon (PNG), the approach B rendering (PNG) and its compact shapes
-  round 2+: the official icon, the rendering of the previous answer and its shapes
+  first prompt: the official icon (PNG), the approach B rendering (PNG) and its shapes
+  next prompts: the official icon, the rendering of the last valid answer and its shapes
+The first prompt is sent again until an answer is valid.
 The model answers with compact shapes (see compact.py). The last answer that parses is
 kept. The model is called through OpenRouter. The per-round PNGs and a log with tokens and
 cost (from OpenRouter usage accounting) are written to the build directory.
@@ -201,7 +202,7 @@ def process(a, k, od, name, svg, b_els, log):
     shapes = from_excalidraw(b_els)
     best, cur_png, cost_sum = None, None, 0.0
     for rnd in range(1, a.rounds + 1):
-        if rnd == 1:
+        if best is None:  # no valid answer yet: start from approach B
             text, imgs = ROUND1.format(name=name, shapes=json.dumps(shapes)), [orig, b_png]
         else:
             text, imgs = ROUND2.format(shapes=json.dumps(best)), [orig, cur_png]
