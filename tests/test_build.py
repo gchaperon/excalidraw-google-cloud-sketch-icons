@@ -9,7 +9,7 @@ import pytest
 
 from pipeline import build, config
 
-from .conftest import mock_client, serve
+from .conftest import FakeRenderer, mock_client, serve
 
 ZIP_URL = "https://icons.example/lib.zip"
 RELEASE = "https://github.com/owner/repo/releases/latest/download/"
@@ -128,13 +128,14 @@ def run(monkeypatch, tmp_path):
     monkeypatch.setattr(build.convert, "convert", lambda svg: [{"type": "line", "groupIds": ["g"]}])
     processed = []
 
-    async def fake_process(http, model, rounds, workdir, name, svg, b_elements):
+    async def fake_process(http, renderer, model, rounds, workdir, name, svg, b_elements):
         processed.append(name)
         if name == "B":
             raise ConnectionError("model down")
         return item(name, "model"), 0.5
 
     monkeypatch.setattr(build.redraw, "process", fake_process)
+    monkeypatch.setattr(build.rendering, "Renderer", FakeRenderer)
 
     def main(release, *args):
         files = {ZIP_URL: icons_zip()} | {RELEASE + n: data for n, data in release.items()}
