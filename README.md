@@ -86,6 +86,8 @@ uv run ruff check pipeline tests       # lint
 uv run ty check pipeline tests         # type check
 ```
 
+The [Checks](.github/workflows/checks.yml) workflow runs the same three checks (`lint`, `types`, `tests`) on every pull request and every push to `main`. `main` is protected: every change goes through a pull request, and the three checks must pass before it can be merged.
+
 ## Future work: automated updates to the Excalidraw catalog
 
 The libraries were submitted to the [Excalidraw libraries catalog](https://libraries.excalidraw.com) once, by hand, on 2026-11-14 ([excalidraw-libraries#3013](https://github.com/excalidraw/excalidraw-libraries/pull/3013) for Products, [#3014](https://github.com/excalidraw/excalidraw-libraries/pull/3014) for Categories). The daily workflow only publishes GitHub releases; it does **not** update the catalog. These notes are for whoever wants to automate that step.
