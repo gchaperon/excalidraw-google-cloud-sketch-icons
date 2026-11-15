@@ -48,9 +48,11 @@ The [Update libraries](.github/workflows/update-libraries.yml) workflow runs eve
 
 Generated files are never committed to this repository. Releases are the only place where the libraries are published.
 
+The workflow can also be started by hand (**Run workflow**). `force` rebuilds every icon. Turn `publish` off for a test run: the build runs as usual, but no release is published; the libraries are only uploaded as the `dist` artifact of the run.
+
 ### Running the pipeline locally
 
-Requirements: [uv](https://docs.astral.sh/uv/), `rsvg-convert` (librsvg), Chromium or Chrome (set `CHROME_BIN` if it is not called `chromium`), and an OpenRouter API key in the `OPENROUTER_API_KEY` environment variable.
+Requirements: [uv](https://docs.astral.sh/uv/), `rsvg-convert` (librsvg), Chromium or Chrome (set `CHROME_BIN` if it is not called `chromium`; Playwright starts it, so `playwright install` is not needed), and an OpenRouter API key in the `OPENROUTER_API_KEY` environment variable.
 
 ```sh
 uv run python -m pipeline.build --check   # report changed icons, no model calls
@@ -72,7 +74,7 @@ Settings (model, rounds, icon names) are in [`pipeline/config.json`](pipeline/co
 
 ### Tests, formatting, linting and types
 
-The tests run offline: the model, the network and Chrome are replaced with fakes. They need `rsvg-convert`. Some tests compare the output with stored snapshots in `tests/__snapshots__/`. If you change the output on purpose, update the snapshots and review the diff.
+Almost all tests run offline: the model, the network and the browser are replaced with fakes. They need `rsvg-convert`. One test in `tests/test_render.py` uses the real browser and downloads Excalidraw from esm.sh; it is skipped if the browser is not installed. Some tests compare the output with stored snapshots in `tests/__snapshots__/`. If you change the output on purpose, update the snapshots and review the diff.
 
 The code is formatted and linted with [Ruff](https://docs.astral.sh/ruff/), and type-checked with [ty](https://docs.astral.sh/ty/). Every function has type annotations (Ruff checks this). The rules are in `pyproject.toml`.
 

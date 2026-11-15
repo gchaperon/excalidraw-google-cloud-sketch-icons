@@ -8,6 +8,7 @@ dependencies = [
     "httpx2>=2.16.0",
     "numpy>=2.0",
     "pillow>=10.0",
+    "playwright>=1.65.2",
     "pydantic>=2.14.3",
     "scikit-image>=0.24",
     "scipy>=1.13",

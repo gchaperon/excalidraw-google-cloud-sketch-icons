@@ -7,11 +7,37 @@ import httpx2
 import pytest
 from syrupy.extensions.json import JSONSnapshotExtension
 
+from pipeline.render import CHROME, Renderer
+
 DATA = Path(__file__).parent / "data"
 
 needs_rsvg = pytest.mark.skipif(
     shutil.which("rsvg-convert") is None, reason="rsvg-convert (librsvg) is not installed"
 )
+needs_chrome = pytest.mark.skipif(
+    shutil.which(CHROME) is None, reason=f"browser {CHROME!r} is not installed (CHROME_BIN)"
+)
+
+
+class FakeRenderer(Renderer):
+    """A Renderer without a browser: it writes a placeholder PNG and records the calls.
+
+    ``render_icon`` is inherited, so the framing code still runs.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        pass
+
+    async def render(self, elements, out_png, size=320):
+        self.calls.append((out_png.name, elements))
+        out_png.write_bytes(b"png")
 
 
 @pytest.fixture

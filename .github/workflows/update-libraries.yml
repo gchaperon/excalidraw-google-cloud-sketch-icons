@@ -21,6 +21,10 @@ on:
         description: "Reprocess every icon, even if the sources did not change"
         type: boolean
         default: false
+      publish:
+        description: "Publish a release if the libraries changed (off: test run, files only as artifact)"
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -52,8 +56,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y librsvg2-bin
-          # Ubuntu 24.04 blocks the user namespaces that Chrome's sandbox needs.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Chrome is preinstalled. Playwright starts it without its sandbox, so Ubuntu's
+          # AppArmor rule for unprivileged user namespaces does not need to change.
 
       - name: Install Python dependencies
         run: uv sync --locked
@@ -93,7 +97,8 @@ jobs:
 
   release:
     needs: build
-    if: needs.build.outputs.changed == 'true'
+    # Scheduled runs always publish; a manual run only if `publish` is on.
+    if: needs.build.outputs.changed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

@@ -6,7 +6,7 @@ import pytest
 
 from pipeline import redraw
 
-from .conftest import DATA, mock_client, needs_rsvg
+from .conftest import DATA, FakeRenderer, mock_client, needs_rsvg
 
 SHAPES = [{"t": "ellipse", "c": "#4285f4", "x": 10, "y": 10, "w": 50, "h": 50}]
 
@@ -156,20 +156,14 @@ def test_retry_delay(headers, attempt, delay):
 @pytest.fixture
 def fake_model(monkeypatch):
     """Replace the model and the Chrome renderer. Answers are taken from a queue."""
-    answers, calls, renders = [], [], []
+    answers, calls = [], []
 
     async def fake_ask(http, model, text, images, icon):
         calls.append((text, [p.name for p in images]))
         return answers.pop(0), 0.5
 
-    def fake_render(elements, out_png):
-        renders.append(out_png.name)
-        out_png.write_bytes(b"png")
-        return True
-
     monkeypatch.setattr(redraw, "ask", fake_ask)
-    monkeypatch.setattr(redraw, "render", fake_render)
-    return types.SimpleNamespace(answers=answers, calls=calls, renders=renders)
+    return types.SimpleNamespace(answers=answers, calls=calls, renderer=FakeRenderer())
 
 
 B_ELEMENTS = [
@@ -191,7 +185,14 @@ async def test_process_keeps_the_last_valid_answer(fake_model, tmp_path, caplog)
     better = [{**SHAPES[0], "x": 20}]
     fake_model.answers += [answer(SHAPES), "garbage", answer(better)]
     item, cost = await redraw.process(
-        httpx2.AsyncClient(), "m", 3, tmp_path, "Big Query", DATA / "blobs.svg", B_ELEMENTS
+        httpx2.AsyncClient(),
+        fake_model.renderer,
+        "m",
+        3,
+        tmp_path,
+        "Big Query",
+        DATA / "blobs.svg",
+        B_ELEMENTS,
     )
 
     assert cost == 1.5
@@ -210,6 +211,14 @@ async def test_process_keeps_the_last_valid_answer(fake_model, tmp_path, caplog)
     assert "Icon: Big Query" in fake_model.calls[0][0]
     assert '"x": 1.0' in fake_model.calls[0][0]  # approach B shapes are in the prompt
     assert "Big Query round 2: could not parse answer" in caplog.text
+    # The approach B drawing and each valid answer are rendered, without the label.
+    rendered = fake_model.renderer.calls
+    assert [png for png, _ in rendered] == [
+        "Big_Query_b.png",
+        "Big_Query_r1.png",
+        "Big_Query_r3.png",
+    ]
+    assert all(e["type"] != "text" for _, els in rendered for e in els)
 
 
 @needs_rsvg
@@ -217,7 +226,14 @@ async def test_process_keeps_the_last_valid_answer(fake_model, tmp_path, caplog)
 async def test_process_without_any_valid_answer(fake_model, tmp_path):
     fake_model.answers += ["garbage", "garbage"]
     item, cost = await redraw.process(
-        httpx2.AsyncClient(), "m", 2, tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS
+        httpx2.AsyncClient(),
+        fake_model.renderer,
+        "m",
+        2,
+        tmp_path,
+        "X",
+        DATA / "blobs.svg",
+        B_ELEMENTS,
     )
 
     assert (item, cost) == (None, 1.0)
@@ -228,7 +244,14 @@ async def test_process_without_any_valid_answer(fake_model, tmp_path):
 async def test_process_repeats_the_first_prompt_until_an_answer_is_valid(fake_model, tmp_path):
     fake_model.answers += [None, "garbage", answer(SHAPES)]
     item, cost = await redraw.process(
-        httpx2.AsyncClient(), "m", 3, tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS
+        httpx2.AsyncClient(),
+        fake_model.renderer,
+        "m",
+        3,
+        tmp_path,
+        "X",
+        DATA / "blobs.svg",
+        B_ELEMENTS,
     )
 
     assert cost == 1.5

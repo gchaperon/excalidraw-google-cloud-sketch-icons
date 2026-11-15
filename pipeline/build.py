@@ -30,6 +30,7 @@ import httpx2
 
 from . import config, convert, redraw
 from . import excalidraw as ex
+from . import render as rendering
 from .config import Config, Library
 
 REPO = Path(__file__).resolve().parent.parent
@@ -164,6 +165,7 @@ def fallback_item(name: str, b_elements: list[ex.Element]) -> ex.LibraryItem:
 async def process_icon(
     cfg: Config,
     model: httpx2.AsyncClient,
+    renderer: rendering.Renderer,
     limit: asyncio.Semaphore,
     workdir: Path,
     name: str,
@@ -174,6 +176,7 @@ async def process_icon(
     Args:
         cfg: The build settings.
         model: OpenRouter client from ``redraw.client()``.
+        renderer: Started renderer, shared by all icons.
         limit: Limits how many icons are processed at the same time.
         workdir: Directory for the intermediate images.
         name: Display name of the icon.
@@ -187,7 +190,7 @@ async def process_icon(
         item: ex.LibraryItem | None
         try:
             item, cost = await redraw.process(
-                model, cfg.model, cfg.rounds, workdir, name, svg, b_elements
+                model, renderer, cfg.model, cfg.rounds, workdir, name, svg, b_elements
             )
         except Exception:  # network or render failure: keep going with approach B
             log.exception("%s: model step failed", name)
@@ -286,9 +289,15 @@ async def build() -> None:
                 workdir = WORK / lib.id
                 workdir.mkdir(parents=True, exist_ok=True)
                 limit = asyncio.Semaphore(cfg.workers)
-                async with redraw.client(redraw.key()) as model:
+                async with (
+                    redraw.client(redraw.key()) as model,
+                    rendering.Renderer() as renderer,
+                ):
                     done = await asyncio.gather(
-                        *(process_icon(cfg, model, limit, workdir, n, icons[n].svg) for n in todo)
+                        *(
+                            process_icon(cfg, model, renderer, limit, workdir, n, icons[n].svg)
+                            for n in todo
+                        )
                     )
                 for n, (item, cost, failed) in zip(todo, done, strict=True):
                     items[n] = item

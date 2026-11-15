@@ -26,7 +26,7 @@ import httpx2
 
 from . import excalidraw as ex
 from .compact import Shape, from_excalidraw, to_excalidraw
-from .render import render_icon as render
+from .render import Renderer
 
 log = logging.getLogger(__name__)
 
@@ -217,6 +217,7 @@ def parse(msg: str | None) -> tuple[list[Shape] | None, str]:
 
 async def process(
     http: httpx2.AsyncClient,
+    renderer: Renderer,
     model: str,
     rounds: int,
     workdir: Path,
@@ -228,6 +229,7 @@ async def process(
 
     Args:
         http: Client from ``client()``.
+        renderer: Started renderer for the PNGs of the drawings.
         model: OpenRouter model id.
         rounds: Number of model calls.
         workdir: Output directory for the PNGs and the final shapes JSON.
@@ -246,7 +248,7 @@ async def process(
         check=True,
     )
     b_png = workdir / f"{fn}_b.png"
-    await asyncio.to_thread(render, b_els, b_png)
+    await renderer.render_icon(b_els, b_png)
     shapes = from_excalidraw(b_els)
     best: list[Shape] | None = None
     cur_png = b_png
@@ -264,7 +266,7 @@ async def process(
             continue
         best = new
         cur_png = workdir / f"{fn}_r{rnd}.png"
-        await asyncio.to_thread(render, to_excalidraw(best, name), cur_png)
+        await renderer.render_icon(to_excalidraw(best, name), cur_png)
         log.info("%s round %d: %d shapes. note: %s", name, rnd, len(best), note[:300])
     if not best:
         return None, cost_sum
