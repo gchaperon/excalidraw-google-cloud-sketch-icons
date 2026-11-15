@@ -3,9 +3,8 @@
 Each icon goes through ``rounds`` model calls:
   first prompt: the official icon (PNG), the approach B rendering (PNG) and its shapes
   next prompts: the official icon, the rendering of the last valid answer and its shapes
-The first prompt is sent again until an answer is valid. An answer is valid if it parses
-and Excalidraw can draw it.
-The model answers with compact shapes (see compact.py). The last answer that parses is
+The first prompt is sent again until an answer is valid. An answer is valid if its shapes
+pass validation (see compact.py) and Excalidraw can draw them. The last valid answer is
 kept. The model is called through OpenRouter. The per-round PNGs are written to the build
 directory; tokens and cost (from OpenRouter usage accounting) go to the DEBUG log.
 
@@ -24,7 +23,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import httpx2
+from pydantic import ValidationError
 
+from . import compact
 from . import excalidraw as ex
 from .compact import Shape, from_excalidraw, to_excalidraw
 from .render import Renderer, RenderError
@@ -192,28 +193,42 @@ async def ask(
     return msg, cost
 
 
-def parse(msg: str | None) -> tuple[list[Shape] | None, str]:
-    """Extract the shapes and the note from a model answer.
+class InvalidAnswer(Exception):  # noqa: N818 (an answer, not an error of our code)
+    """A model answer without valid shapes. The message says why."""
+
+
+def parse(msg: str | None) -> tuple[list[Shape], str]:
+    """Extract and validate the shapes and the note of a model answer.
 
     Args:
         msg: The answer text, or None.
 
     Returns:
-        A tuple (shapes, note). ``shapes`` comes from the last fenced JSON block with a
-        "shapes" key, and ``note`` is the text before the first fence. If there is no
-        valid block, (None, "").
+        A tuple (shapes, note). ``shapes`` comes from the last fenced JSON block, which
+        must be an object with a non-empty "shapes" list of valid shapes (see
+        ``compact.validate_answer``). ``note`` is the text before the first fence.
+
+    Raises:
+        InvalidAnswer: If the answer has no such block or any shape is invalid.
     """
     if not msg:
-        return None, ""
+        raise InvalidAnswer("empty answer")
     blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", msg, re.S)
     if not blocks:
-        return None, ""
+        raise InvalidAnswer("no fenced JSON block")
     try:
-        shapes = json.loads(blocks[-1])["shapes"]
-    except Exception:
-        return None, ""
-    note = msg.split("```")[0].strip()
-    return shapes, note
+        shapes = compact.validate_answer(blocks[-1])
+    except ValidationError as e:
+        raise InvalidAnswer(_summary(e)) from None
+    return shapes, msg.split("```")[0].strip()
+
+
+def _summary(e: ValidationError, limit: int = 3) -> str:
+    """Return the first ``limit`` validation errors on one line, like "shapes.2.c: ..."."""
+    errors = e.errors(include_url=False)
+    parts = [f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in errors[:limit]]
+    more = f" (+{len(errors) - limit} more)" if len(errors) > limit else ""
+    return "invalid shapes: " + "; ".join(parts) + more
 
 
 async def process(
@@ -256,15 +271,16 @@ async def process(
     cost_sum = 0.0
     for rnd in range(1, rounds + 1):
         if best is None:  # no valid answer yet: start from approach B
-            text, imgs = ROUND1.format(name=name, shapes=json.dumps(shapes)), [orig, b_png]
+            text, imgs = ROUND1.format(name=name, shapes=compact.dump(shapes)), [orig, b_png]
         else:
-            text, imgs = ROUND2.format(shapes=json.dumps(best)), [orig, cur_png]
+            text, imgs = ROUND2.format(shapes=compact.dump(best)), [orig, cur_png]
         msg, cost = await ask(http, model, text, imgs, name)
         cost_sum += cost
         log.debug("%s round %d answer: %s", name, rnd, msg)
-        new, note = parse(msg)
-        if not new:
-            log.warning("%s round %d: could not parse answer: %r", name, rnd, (msg or "")[:300])
+        try:
+            new, note = parse(msg)
+        except InvalidAnswer as e:
+            log.warning("%s round %d: invalid answer: %s", name, rnd, e)
             continue
         png = workdir / f"{fn}_r{rnd}.png"
         try:
@@ -276,5 +292,5 @@ async def process(
         log.info("%s round %d: %d shapes. note: %s", name, rnd, len(best), note[:300])
     if not best:
         return None, cost_sum
-    (workdir / f"{fn}_shapes.json").write_text(json.dumps(best))
+    (workdir / f"{fn}_shapes.json").write_text(compact.dump(best))
     return ex.item(f"c-{fn}", name, to_excalidraw(best, name)), cost_sum
