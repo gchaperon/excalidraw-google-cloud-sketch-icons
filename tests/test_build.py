@@ -4,9 +4,12 @@ import json
 import sys
 import zipfile
 
+import httpx2
 import pytest
 
 from pipeline import build, config
+
+from .conftest import mock_client, serve
 
 ZIP_URL = "https://icons.example/lib.zip"
 RELEASE = "https://github.com/owner/repo/releases/latest/download/"
@@ -64,10 +67,14 @@ def library(*items):
 # --- fetch_icons ---------------------------------------------------------------------------
 
 
-def test_fetch_icons_reads_one_svg_per_folder(monkeypatch, tmp_path, caplog):
-    monkeypatch.setattr(build, "download", lambda url: icons_zip())
+async def fetch_icons(files, tmp_path):
+    async with mock_client(serve(files)) as http:
+        return await build.fetch_icons(http, LIBRARY, tmp_path)
 
-    icons = build.fetch_icons(LIBRARY, tmp_path)
+
+@pytest.mark.anyio
+async def test_fetch_icons_reads_one_svg_per_folder(tmp_path, caplog):
+    icons = await fetch_icons({ZIP_URL: icons_zip()}, tmp_path)
 
     assert sorted(icons) == ["A", "B", "Nice Name"]
     assert icons["Nice Name"].folder == "Folder C"
@@ -75,19 +82,33 @@ def test_fetch_icons_reads_one_svg_per_folder(monkeypatch, tmp_path, caplog):
     assert "lib/Two SVGs: expected 1 SVG, found 2; skipped" in caplog.text
 
 
+@pytest.mark.anyio
 @pytest.mark.parametrize("member", ["../evil.svg", "Icons/../../evil.svg", "/abs/evil.svg"])
-def test_fetch_icons_refuses_unsafe_paths(monkeypatch, tmp_path, member):
-    monkeypatch.setattr(build, "download", lambda url: make_zip({member: "x"}))
-
+async def test_fetch_icons_refuses_unsafe_paths(tmp_path, member):
     with pytest.raises(SystemExit, match="unsafe path"):
-        build.fetch_icons(LIBRARY, tmp_path)
+        await fetch_icons({ZIP_URL: make_zip({member: "x"})}, tmp_path)
 
 
-def test_fetch_icons_missing_zip(monkeypatch, tmp_path):
-    monkeypatch.setattr(build, "download", lambda url: None)
-
+@pytest.mark.anyio
+async def test_fetch_icons_missing_zip(tmp_path):
     with pytest.raises(SystemExit, match="not found"):
-        build.fetch_icons(LIBRARY, tmp_path)
+        await fetch_icons({}, tmp_path)
+
+
+@pytest.mark.anyio
+async def test_download_raises_on_server_errors():
+    async with mock_client(lambda request: httpx2.Response(503)) as http:
+        with pytest.raises(httpx2.HTTPStatusError):
+            await build.download(http, ZIP_URL)
+
+
+@pytest.mark.anyio
+async def test_previous_release_marks_missing_files():
+    lock_url = RELEASE + build.LOCK_FILE
+    async with mock_client(serve({lock_url: b"{}"})) as http:
+        prev = await build.previous_release(http, config.Config.model_validate(CONFIG))
+
+    assert prev == {build.LOCK_FILE: b"{}", "lib.excalidrawlib": None}
 
 
 # --- main ----------------------------------------------------------------------------------
@@ -107,7 +128,7 @@ def run(monkeypatch, tmp_path):
     monkeypatch.setattr(build.convert, "convert", lambda svg: [{"type": "line", "groupIds": ["g"]}])
     processed = []
 
-    def fake_process(model, rounds, key, workdir, name, svg, b_elements):
+    async def fake_process(http, model, rounds, workdir, name, svg, b_elements):
         processed.append(name)
         if name == "B":
             raise ConnectionError("model down")
@@ -117,7 +138,7 @@ def run(monkeypatch, tmp_path):
 
     def main(release, *args):
         files = {ZIP_URL: icons_zip()} | {RELEASE + n: data for n, data in release.items()}
-        monkeypatch.setattr(build, "download", lambda url: files.get(url))
+        monkeypatch.setattr(build, "http_client", lambda: mock_client(serve(files)))
         monkeypatch.setattr(sys, "argv", ["build", *args])
         build.main()
         dist = tmp_path / "dist"

@@ -3,6 +3,7 @@ import random
 import shutil
 from pathlib import Path
 
+import httpx2
 import pytest
 from syrupy.extensions.json import JSONSnapshotExtension
 
@@ -32,3 +33,24 @@ def as_json(value):
     This also turns numpy scalars into plain Python numbers.
     """
     return json.loads(json.dumps(value))
+
+
+@pytest.fixture
+def anyio_backend():
+    """Run the async tests (marked with ``pytest.mark.anyio``) on asyncio only."""
+    return "asyncio"
+
+
+def mock_client(handler, **kwargs):
+    """Return an AsyncClient whose requests go to ``handler(request) -> Response``."""
+    return httpx2.AsyncClient(transport=httpx2.MockTransport(handler), **kwargs)
+
+
+def serve(files):
+    """Return a request handler that serves ``files`` {url: bytes} and 404 for other URLs."""
+
+    def handler(request):
+        data = files.get(str(request.url))
+        return httpx2.Response(200, content=data) if data is not None else httpx2.Response(404)
+
+    return handler
