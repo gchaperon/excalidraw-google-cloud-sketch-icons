@@ -199,7 +199,8 @@ def split_corners(poly: Iterable[Any]) -> list[list[RasterPoint]]:
     pts = [(float(p[0]), float(p[1])) for p in poly]
     if len(pts) < 3:
         return [pts]
-    parts, cur = [], [pts[0]]
+    parts: list[list[RasterPoint]] = []
+    cur = [pts[0]]
     for k in range(1, len(pts) - 1):
         cur.append(pts[k])
         a, b, c = pts[k - 1], pts[k], pts[k + 1]

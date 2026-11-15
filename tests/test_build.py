@@ -8,6 +8,7 @@ import httpx2
 import pytest
 
 from pipeline import build, config
+from pipeline import excalidraw as ex
 
 from .conftest import FakeRenderer, mock_client, serve
 
@@ -52,16 +53,12 @@ def sha(text):
 
 
 def item(name, origin):
-    return {
-        "id": f"{origin}-{name}",
-        "name": name,
-        "elements": [{"type": "line"}],
-        "origin": origin,
-    }
+    """A valid library item; ``origin`` ("old" or "model") shows where it came from."""
+    return ex.item(f"{origin}-{name}", name, [{"type": "line"}])
 
 
 def library(*items):
-    return json.dumps({"type": "excalidrawlib", "version": 2, "libraryItems": list(items)})
+    return json.dumps(ex.library(list(items), source="https://github.com/owner/repo"))
 
 
 # --- fetch_icons ---------------------------------------------------------------------------
@@ -109,6 +106,48 @@ async def test_previous_release_marks_missing_files():
         prev = await build.previous_release(http, config.Config.model_validate(CONFIG))
 
     assert prev == {build.LOCK_FILE: b"{}", "lib.excalidrawlib": None}
+
+
+# --- previous release files -----------------------------------------------------------
+
+
+def test_missing_release_files_mean_no_state():
+    assert build.read_lock(None) == {}
+    assert build.read_library(None, "lib.excalidrawlib") == {}
+
+
+def test_read_library_returns_items_by_name():
+    items = build.read_library(library(item("A", "old")).encode(), "lib.excalidrawlib")
+
+    assert items["A"]["id"] == "old-A"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"",
+        b"not json",
+        b'{"lib": {"A": {"folder": "A", "sha256": 1}}}',  # wrong type
+        b'{"lib": ["A"]}',  # wrong shape
+    ],
+)
+def test_invalid_lock_file_stops_the_build(data):
+    with pytest.raises(SystemExit, match=r"invalid sources\.lock\.json in the latest release"):
+        build.read_lock(data)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"{}",
+        b'{"type": "excalidrawlib", "version": 1, "source": "x", "libraryItems": []}',
+        json.dumps({"type": "excalidrawlib", "version": 2, "libraryItems": []}).encode(),
+        library({"id": "x", "name": "A", "elements": []}).encode(),  # item without status
+    ],
+)
+def test_invalid_library_file_stops_the_build(data):
+    with pytest.raises(SystemExit, match=r"invalid lib\.excalidrawlib in the latest release"):
+        build.read_library(data, "lib.excalidrawlib")
 
 
 # --- main ----------------------------------------------------------------------------------

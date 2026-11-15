@@ -76,7 +76,7 @@ Settings (model, rounds, icon names) are in [`pipeline/config.json`](pipeline/co
 
 Almost all tests run offline: the model, the network and the browser are replaced with fakes. They need `rsvg-convert`. One test in `tests/test_render.py` uses the real browser and downloads Excalidraw from esm.sh; it is skipped if the browser is not installed. Some tests compare the output with stored snapshots in `tests/__snapshots__/`. If you change the output on purpose, update the snapshots and review the diff.
 
-The code is formatted and linted with [Ruff](https://docs.astral.sh/ruff/), and type-checked with [ty](https://docs.astral.sh/ty/). Every function has type annotations (Ruff checks this). The rules are in `pyproject.toml`.
+The code is formatted and linted with [Ruff](https://docs.astral.sh/ruff/), and type-checked with [ty](https://docs.astral.sh/ty/), with every ty rule enabled as an error. Every function has type annotations (Ruff checks this). The rules are in `pyproject.toml`.
 
 ```sh
 uv run pytest                          # run the tests
