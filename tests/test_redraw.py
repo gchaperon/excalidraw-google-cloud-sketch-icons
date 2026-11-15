@@ -163,6 +163,7 @@ def test_process_keeps_the_last_valid_answer(fake_model, tmp_path, caplog):
     item, cost = redraw.process("m", 3, "k", tmp_path, "Big Query", DATA / "blobs.svg", B_ELEMENTS)
 
     assert cost == 1.5
+    assert item is not None
     assert item["id"] == "c-Big_Query"
     assert item["name"] == "Big Query"
     assert [e["type"] for e in item["elements"]] == ["ellipse", "text"]
@@ -193,6 +194,7 @@ def test_process_repeats_the_first_prompt_until_an_answer_is_valid(fake_model, t
     item, cost = redraw.process("m", 3, "k", tmp_path, "X", DATA / "blobs.svg", B_ELEMENTS)
 
     assert cost == 1.5
+    assert item is not None
     assert item["elements"][0]["x"] == 10
     assert [images for _, images in fake_model.calls] == [["X_orig.png", "X_b.png"]] * 3
     assert all("Icon: X" in text for text, _ in fake_model.calls)

@@ -21,9 +21,12 @@ Needs `rsvg-convert` (librsvg) on PATH.
 import math
 import re
 import subprocess
+from collections.abc import Iterable, Iterator, Sequence
 from io import BytesIO
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 from PIL import Image
 from scipy import ndimage
 from skimage.measure import approximate_polygon, find_contours, label, regionprops
@@ -37,10 +40,16 @@ SPUR = 34  # px at RES: drop skeleton branches shorter than this
 TOL = 4.0  # px at RES: RDP tolerance
 CORNER = 50  # degrees: split polylines at turns sharper than this
 
+type Pixel = tuple[int, int]
+"""A raster pixel, (row, column) = (y, x)."""
+type RasterPoint = tuple[float, float]
+"""A point in raster px, (y, x)."""
+type Polyline = Sequence[RasterPoint]
+
 SHAPE_RE = re.compile(r"<(path|circle|rect|ellipse|polygon|polyline|line)\b[^>]*?/?>", re.S)
 
 
-def rasterize(svg_text):
+def rasterize(svg_text: str) -> npt.NDArray[np.uint8]:
     """Rasterize an SVG document with rsvg-convert.
 
     Returns:
@@ -55,7 +64,7 @@ def rasterize(svg_text):
     return np.array(Image.open(BytesIO(png)).convert("RGBA"))
 
 
-def shapes(svg):
+def shapes(svg: str) -> Iterator[str]:
     """Yield one SVG document per drawable shape of the art, with only that shape in it.
 
     The invisible ``bounding_box`` group of Google icons is removed. Shapes inside
@@ -68,7 +77,7 @@ def shapes(svg):
     body = re.sub(r'<g id="bounding_box">.*?</g>', "", svg, flags=re.S)
     hidden = [m.span() for m in re.finditer(r"<(defs|mask|clipPath)\b.*?</\1>", body, re.S)]
 
-    def is_hidden(m):
+    def is_hidden(m: re.Match[str]) -> bool:
         return any(a <= m.start() < b for a, b in hidden)
 
     matches = [m for m in SHAPE_RE.finditer(body) if not is_hidden(m)]
@@ -81,7 +90,7 @@ def shapes(svg):
         yield only
 
 
-def neighbors(p, pts):
+def neighbors(p: Pixel, pts: set[Pixel]) -> Iterator[Pixel]:
     """Yield the 8-connected neighbors of pixel ``p`` = (y, x) that are in the set ``pts``."""
     y, x = p
     for dy in (-1, 0, 1):
@@ -90,7 +99,7 @@ def neighbors(p, pts):
                 yield (y + dy, x + dx)
 
 
-def trace(skel):
+def trace(skel: npt.NDArray[np.bool_]) -> tuple[list[list[Pixel]], dict[Pixel, int]]:
     """Trace a skeleton bitmap into polylines.
 
     Every pixel with other than 2 neighbors is a node (an end point or a junction). Each
@@ -104,12 +113,13 @@ def trace(skel):
         A tuple (polylines, degree). Each polyline is a list of (y, x) pixels. ``degree``
         maps each skeleton pixel to its number of neighbors.
     """
-    pts = set(zip(*np.nonzero(skel), strict=True))
+    pts: set[Pixel] = {(int(y), int(x)) for y, x in zip(*np.nonzero(skel), strict=True)}
     deg = {p: sum(1 for _ in neighbors(p, pts)) for p in pts}
     nodes = {p for p in pts if deg[p] != 2}
-    seen_edges, lines = set(), []
+    seen_edges: set[tuple[Pixel, Pixel]] = set()
+    lines: list[list[Pixel]] = []
 
-    def walk(a, b):
+    def walk(a: Pixel, b: Pixel) -> list[Pixel]:
         """Follow the skeleton from node ``a`` through ``b`` to the next node."""
         line = [a, b]
         prev, cur = a, b
@@ -151,7 +161,7 @@ def trace(skel):
     return lines, deg
 
 
-def prune(lines, deg):
+def prune(lines: list[list[Pixel]], deg: dict[Pixel, int]) -> list[list[Pixel]]:
     """Remove spurs and very short polylines.
 
     A spur is a short branch from a junction to a free end. Skeletonization makes them at
@@ -177,7 +187,7 @@ def prune(lines, deg):
     return out
 
 
-def split_corners(poly):
+def split_corners(poly: Iterable[Any]) -> list[list[RasterPoint]]:
     """Split a polyline at each turn sharper than CORNER degrees.
 
     Excalidraw's curved lines round every corner, so sharp corners must be the ends of
@@ -186,7 +196,7 @@ def split_corners(poly):
     Returns:
         List of polylines, as lists of float tuples. Adjacent parts share their end point.
     """
-    pts = [tuple(map(float, p)) for p in poly]
+    pts = [(float(p[0]), float(p[1])) for p in poly]
     if len(pts) < 3:
         return [pts]
     parts, cur = [], [pts[0]]
@@ -205,7 +215,7 @@ def split_corners(poly):
     return parts
 
 
-def fit_circle(pts):
+def fit_circle(pts: Polyline) -> tuple[float, float, float, float]:
     """Fit a circle to points with linear least squares.
 
     Args:
@@ -221,24 +231,28 @@ def fit_circle(pts):
     ca, cb, c = np.linalg.lstsq(coeffs, rhs, rcond=None)[0]
     r = math.sqrt(max(c + ca * ca + cb * cb, 0))
     err = np.abs(np.hypot(p[:, 0] - ca, p[:, 1] - cb) - r).max()
-    return ca, cb, r, err
+    return float(ca), float(cb), r, float(err)
 
 
-def to_xy(pts):
+def to_xy(pts: Iterable[Any]) -> list[ex.Point]:
     """Convert raster points [(y, x), ...] to Excalidraw points [(x, y), ...]."""
-    return [(p[1] * SCALE, p[0] * SCALE) for p in pts]
+    return [(float(p[1]) * SCALE, float(p[0]) * SCALE) for p in pts]
 
 
-def color_of(im):
-    """Return the median color of the opaque pixels as "#rrggbb", or None if there are none."""
-    a = im[..., 3] > 128
-    if not a.any():
-        return None
-    r, g, b = np.median(im[a][:, :3], axis=0).astype(int)
+def color_of(im: npt.NDArray[np.uint8], mask: npt.NDArray[np.bool_]) -> str:
+    """Return the median color of the opaque pixels as "#rrggbb".
+
+    Args:
+        im: RGBA raster.
+        mask: Pixels of the shape. Used if no pixel is more than half opaque.
+    """
+    opaque = im[..., 3] > 128
+    pixels = im[opaque if opaque.any() else mask]
+    r, g, b = np.median(pixels[:, :3], axis=0).astype(int)
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def extend_ends(line, deg, half):
+def extend_ends(line: Polyline, deg: dict[Pixel, int], half: float) -> list[RasterPoint]:
     """Extend the free ends of a polyline by 0.8 x the stroke half-width.
 
     The skeleton stops about one half-width before the end of the stroke, so without this
@@ -265,7 +279,7 @@ def extend_ends(line, deg, half):
     return line
 
 
-def convert(svg_text):
+def convert(svg_text: str) -> list[ex.Element]:
     """Convert one icon SVG to Excalidraw elements (approach B).
 
     Args:
@@ -281,7 +295,7 @@ def convert(svg_text):
         mask = im[..., 3] > 100
         if mask.sum() < 30:
             continue  # empty or nearly invisible
-        color = color_of(im)
+        color = color_of(im, mask)
         lab = label(mask)
         for reg in regionprops(lab):
             m = lab == reg.label

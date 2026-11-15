@@ -70,17 +70,18 @@ The previous state is downloaded from the latest release. Outputs are written to
 
 Settings (model, rounds, icon names) are in [`pipeline/config.json`](pipeline/config.json).
 
-### Tests, formatting and linting
+### Tests, formatting, linting and types
 
 The tests run offline: the model, the network and Chrome are replaced with fakes. They need `rsvg-convert`. Some tests compare the output with stored snapshots in `tests/__snapshots__/`. If you change the output on purpose, update the snapshots and review the diff.
 
-The code is formatted and linted with [Ruff](https://docs.astral.sh/ruff/). The rules are in `pyproject.toml`.
+The code is formatted and linted with [Ruff](https://docs.astral.sh/ruff/), and type-checked with [ty](https://docs.astral.sh/ty/). Every function has type annotations (Ruff checks this). The rules are in `pyproject.toml`.
 
 ```sh
 uv run pytest                          # run the tests
 uv run pytest --snapshot-update        # rewrite the snapshots after an intended change
 uv run ruff format pipeline tests      # format
 uv run ruff check pipeline tests       # lint
+uv run ty check pipeline tests         # type check
 ```
 
 ## Future work: automated updates to the Excalidraw catalog

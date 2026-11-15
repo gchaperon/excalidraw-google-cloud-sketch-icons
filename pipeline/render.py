@@ -10,6 +10,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from PIL import Image
 
@@ -28,7 +29,7 @@ document.getElementById('c').appendChild(svg); document.title = 'done';
 </script></body></html>"""
 
 
-def render(elements, out_png, size=320):
+def render(elements: list[dict[str, Any]], out_png: Path, size: int = 320) -> bool:
     """Render elements to a size x size PNG, scaled to fit, on a white background.
 
     Chrome gets 90 seconds. Its errors are ignored: the result is only whether the PNG
@@ -42,7 +43,7 @@ def render(elements, out_png, size=320):
     Returns:
         True if the PNG was written.
     """
-    out_png = Path(out_png).resolve()
+    out_png = out_png.resolve()
     with tempfile.TemporaryDirectory() as d:
         html = Path(d) / "r.html"
         html.write_text(PAGE % (size, size, json.dumps(elements)))
@@ -69,7 +70,9 @@ def render(elements, out_png, size=320):
     return False
 
 
-def render_icon(elements, out_png, size=320, box=120):
+def render_icon(
+    elements: list[dict[str, Any]], out_png: Path, size: int = 320, box: int = 120
+) -> bool:
     """Render the icon without its label, in the frame of the original icon.
 
     An invisible box x box rectangle at the origin is added, so the image is not

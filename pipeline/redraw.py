@@ -18,12 +18,13 @@ import os
 import re
 import subprocess
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import requests
 
 from . import excalidraw as ex
-from .compact import from_excalidraw, to_excalidraw
+from .compact import Shape, from_excalidraw, to_excalidraw
 from .render import render_icon as render
 
 log = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ Your shapes:
 ```"""
 
 
-def key():
+def key() -> str:
     """Return the OpenRouter API key from the environment variable OPENROUTER_API_KEY.
 
     To read it from a .env file, run with ``uv run --env-file .env ...``.
@@ -93,12 +94,14 @@ def key():
     )
 
 
-def png_uri(path):
+def png_uri(path: Path) -> str:
     """Return a PNG file as a data URI."""
-    return "data:image/png;base64," + base64.b64encode(Path(path).read_bytes()).decode()
+    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
 
 
-def ask(model, key, text, images, icon):
+def ask(
+    model: str, key: str, text: str, images: Sequence[Path], icon: str
+) -> tuple[str | None, float]:
     """Send one prompt with images to the model.
 
     A non-200 answer is tried again, up to 3 attempts in total.
@@ -156,7 +159,7 @@ def ask(model, key, text, images, icon):
     return msg, cost
 
 
-def parse(msg):
+def parse(msg: str | None) -> tuple[list[Shape] | None, str]:
     """Extract the shapes and the note from a model answer.
 
     Args:
@@ -167,7 +170,9 @@ def parse(msg):
         "shapes" key, and ``note`` is the text before the first fence. If there is no
         valid block, (None, "").
     """
-    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", msg or "", re.S)
+    if not msg:
+        return None, ""
+    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", msg, re.S)
     if not blocks:
         return None, ""
     try:
@@ -178,7 +183,15 @@ def parse(msg):
     return shapes, note
 
 
-def process(model, rounds, key, workdir, name, svg, b_els):
+def process(
+    model: str,
+    rounds: int,
+    key: str,
+    workdir: Path,
+    name: str,
+    svg: Path,
+    b_els: list[ex.Element],
+) -> tuple[ex.LibraryItem | None, float]:
     """Run all rounds for one icon.
 
     Args:
@@ -193,7 +206,6 @@ def process(model, rounds, key, workdir, name, svg, b_els):
     Returns:
         A tuple (library item or None if no round gave valid shapes, cost in USD).
     """
-    workdir = Path(workdir)
     fn = re.sub(r"\W+", "_", name)  # file name stem
     orig = workdir / f"{fn}_orig.png"
     subprocess.run(
@@ -203,7 +215,9 @@ def process(model, rounds, key, workdir, name, svg, b_els):
     b_png = workdir / f"{fn}_b.png"
     render(b_els, b_png)
     shapes = from_excalidraw(b_els)
-    best, cur_png, cost_sum = None, None, 0.0
+    best: list[Shape] | None = None
+    cur_png = b_png
+    cost_sum = 0.0
     for rnd in range(1, rounds + 1):
         if best is None:  # no valid answer yet: start from approach B
             text, imgs = ROUND1.format(name=name, shapes=json.dumps(shapes)), [orig, b_png]

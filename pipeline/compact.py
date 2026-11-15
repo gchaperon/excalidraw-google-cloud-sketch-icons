@@ -13,13 +13,18 @@ shorter. Coordinates are in a 120x120 icon box, with the origin at the top left:
 Optional on any shape: "sw" (stroke width, default 6).
 """
 
+from typing import Any
+
 from . import excalidraw as ex
+
+type Shape = dict[str, Any]
+"""A compact shape, as described above. It comes from the model, so it is not trusted."""
 
 DEFAULT_COLOR = "#1e1e1e"
 FILLS = ("solid", "hachure", "cross-hatch")
 
 
-def to_excalidraw(shapes, name):
+def to_excalidraw(shapes: list[Shape], name: str) -> list[ex.Element]:
     """Convert compact shapes to Excalidraw elements, and add the label.
 
     Shapes with an unknown type and lines with fewer than 2 points are skipped.
@@ -32,10 +37,10 @@ def to_excalidraw(shapes, name):
         The elements, all in one new group. The label is the last element.
     """
     group = ex.new_group()
-    els = []
+    els: list[ex.Element] = []
     for s in shapes:
         t, c = s.get("t"), s.get("c", DEFAULT_COLOR)
-        props = {"strokeWidth": float(s.get("sw", ex.STROKE_WIDTH))}
+        props: dict[str, Any] = {"strokeWidth": float(s.get("sw", ex.STROKE_WIDTH))}
         fill = s.get("fill", "none")
         if fill in FILLS:
             props |= {"backgroundColor": c, "fillStyle": fill}
@@ -59,11 +64,11 @@ def to_excalidraw(shapes, name):
     return els
 
 
-def _round1(v):
+def _round1(v: float) -> float:
     return round(float(v), 1)
 
 
-def from_excalidraw(els):
+def from_excalidraw(els: list[ex.Element]) -> list[Shape]:
     """Convert Excalidraw elements to compact shapes.
 
     Only lines, ellipses and rectangles are kept; text and other elements are dropped.
@@ -75,7 +80,7 @@ def from_excalidraw(els):
     Returns:
         List of compact shapes (see the module docstring).
     """
-    out = []
+    out: list[Shape] = []
     for e in els:
         has_fill = e.get("backgroundColor") not in (None, "transparent")
         fill = {"fill": e.get("fillStyle", "solid")} if has_fill else {}
